@@ -1,0 +1,19 @@
+# Bu dosya henüz basit tutuluyor.
+# Faz 2'de gerçek .NET/Visual Studio projeleri oluşunca
+# resmi "Visual Studio" .gitignore şablonuyla genişletilecek.
+
+# Build çıktıları (ileride src/ altında oluşacak)
+bin/
+obj/
+.vs/
+
+# Kullanıcıya özel / gizli ayar dosyaları
+*.user
+appsettings.Development.json
+appsettings.Local.json
+*.env
+
+# İşletim sistemi / editör dosyaları
+.DS_Store
+Thumbs.db
+*.log
