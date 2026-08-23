@@ -1,20 +1,28 @@
-﻿# ShoeRetail
+# ShoeRetail
 
-Ayakkabı perakendecileri için white-label masaüstü mağaza yönetim sistemi.
+Ayakkabı toptancısı/distribütörü için stok, sipariş (iki yönlü: üretici ve perakendeci)
+ve finans (iki yönlü: alacak ve borç) yönetim sistemi.
 
-**Ticari model:** Tek kod tabanı → her mağaza için bağımsız kurulum + bağımsız veritabanı
-(klasik multi-tenant SaaS değil).
+```
+ÜRETİCİLER ──▶ BİZ (toptancı) ──▶ PERAKENDE MAĞAZALAR
+ uygulamayı kullanır   uygulamayı kullanır   uygulamayı KULLANMAZ
+ (Blazor portal)       (WPF masaüstü)        (telefonla sipariş, biz elle gireriz)
+```
+
+**Beyaz etiket (white-label):** tek kod tabanı, her kurulum kendi bağımsız veritabanına
+sahip (klasik multi-tenant SaaS değil).
 
 ## Teknoloji Yığını
 
 | Katman | Teknoloji |
 |---|---|
-| Desktop UI | WPF (MVVM) |
+| Desktop UI (toptancı konsolu) | WPF (MVVM) |
+| Üretici portalı (Faz 18) | Blazor Server |
 | Backend | ASP.NET Core Web API |
 | ORM | Entity Framework Core |
 | Veritabanı | PostgreSQL |
 | Runtime | .NET 10 |
-| API Stili | REST + JSON |
+| API Stili | REST + JSON, JWT auth |
 
 ## Mimari
 
@@ -26,12 +34,18 @@ WPF, PostgreSQL'e asla doğrudan bağlanmaz. Backend, güvenlik ve iş kuralı s
 
 ## Proje Durumu
 
-Şu an **veritabanı fiziksel şema tasarımı** aşamasındayız.
-Detaylar: `docs/database/02-physical-blueprint.md`
+- ✅ Faz 3 — Veritabanı fiziksel şema tasarımı (22 tablo, test edildi, onaylandı)
+- ✅ Faz 4 — Backend temeli (solution, EF Core, migration'lar)
+- ◀── Faz 5 — Kimlik doğrulama (JWT) + RBAC (şu an)
 
-Tüm ürün vizyonu, iş kuralları ve mimari kararlar için:
-`docs/00-handoff/ShoeRetail_AI_Agent_Handoff.txt`
+Güncel yol haritası ve tam durum: `CLAUDE.md`
 
-## Klasör Yapısı
+## Belgeler
 
-Bkz. `docs/architecture/folder-structure.md`
+| Belge | İçerik |
+|---|---|
+| `CLAUDE.md` | Oturum başlangıç noktası — özet + tam güncel durum |
+| `docs/00-handoff/02-project-spec-v2.md` | İş modeli / ürün spesifikasyonu (post-pivot, yetkili kaynak) |
+| `docs/database/02-physical-blueprint.md` | Veritabanı tasarımı, tablo tablo gerekçeli |
+| `docs/architecture/02-backend-foundation.md` | Backend temeli karar günlüğü (Faz 4) |
+| `docs/architecture/folder-structure.md` | Klasör yapısı |

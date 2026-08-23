@@ -5,40 +5,52 @@ Bu proje **OneDrive senkronizasyonu dışında** yerel bir konumda tutulmalıdı
 görevini üstlenir; OneDrive ile aynı anda senkronize etmek dosya kilidi
 çakışmalarına yol açabilir.
 
+> ✅ Faz 4'te gerçekleşti (2026-08-24): `src/` ve `tests/` artık gerçek proje dosyalarını
+> içeriyor. Ayrıntı ve gerekçe: `docs/architecture/02-backend-foundation.md`.
+
 ```
 ShoeRetail/                              ← Git repo kökü
 ├── .git/
 ├── .gitignore
+├── ShoeRetail.sln / .slnx
+├── dotnet-tools.json                    ← yerel dotnet-ef sürüm kilidi
 ├── README.md
 │
 ├── docs/                                ← tasarım dokümanları (kod DEĞİL)
 │   ├── 00-handoff/
-│   │   └── ShoeRetail_AI_Agent_Handoff.txt
+│   │   └── 02-project-spec-v2.md        ← iş modeli spesifikasyonu
 │   ├── architecture/
-│   │   └── folder-structure.md          ← bu dosya
+│   │   ├── folder-structure.md          ← bu dosya
+│   │   └── 02-backend-foundation.md     ← Faz 4 karar günlüğü
 │   └── database/
-│       └── 02-physical-blueprint.md     ← aktif çalışılan belge
+│       ├── 02-physical-blueprint.md     ← 22 tablo, karar karar
+│       ├── schema.sql                   ← çalıştırılabilir DDL
+│       └── tests/                       ← SQL kısıt/mutabakat test paketi
 │
-├── src/                                 ← Faz 2'de oluşturulacak (henüz YOK)
-│   ├── ShoeRetail.Domain/
-│   ├── ShoeRetail.Application/
-│   ├── ShoeRetail.Infrastructure/
-│   ├── ShoeRetail.Contracts/
-│   ├── ShoeRetail.Api/
-│   └── ShoeRetail.Desktop/
+├── src/
+│   ├── ShoeRetail.Domain/               ← POCO entity'ler (22 tablo eşlendi)
+│   ├── ShoeRetail.Application/          ← boş, iş kuralları Faz 5+'te gelecek
+│   ├── ShoeRetail.Infrastructure/       ← EF Core, Npgsql, DbContext, migration'lar
+│   ├── ShoeRetail.Contracts/            ← boş, API DTO'ları Faz 5+'te gelecek
+│   ├── ShoeRetail.Api/                  ← ASP.NET Core Web API iskeleti
+│   └── ShoeRetail.Desktop/              ← WPF iskeleti (henüz boş şablon)
 │
-└── tests/                               ← Faz 2+ (henüz YOK)
-    ├── ShoeRetail.Domain.Tests/
-    └── ShoeRetail.Api.Tests/
+└── tests/
+    ├── ShoeRetail.Domain.Tests/         ← henüz test yok (Domain'de iş kuralı yok)
+    └── ShoeRetail.Api.Tests/            ← EF Core entegrasyon testleri (shoeretail_dev)
 ```
 
 ## Neden `docs/` önce geliyor?
 
 Kod yazmadan önce mimari ve veritabanı kararlarının belgeye dökülmesi,
 ileride "neden böyle yaptık?" sorusuna dönüp bakabilmemizi sağlar. `src/`
-klasörü, Faz 2 (Solution Architecture / Project Skeleton) adımında,
-`dotnet new` ile gerçek proje dosyaları oluşturulduğunda ortaya çıkacak —
-şimdiden boş proje klasörleri açmıyoruz.
+klasörü Faz 4'te (Backend Temeli / Solution İskeleti), `dotnet new` ile gerçek
+proje dosyaları oluşturulduğunda ortaya çıktı — Faz 3 bitene kadar bilerek boş
+proje klasörleri açılmadı.
+
+> Not: bu paragraf eskiden "Faz 2" diyordu — o, yol haritası 20 faza
+> genişletilmeden önce yazılmıştı. Güncel faz numaraları için `CLAUDE.md` §9
+> tektir.
 
 ## Kurulum Adımları (özet)
 
@@ -48,4 +60,4 @@ klasörü, Faz 2 (Solution Architecture / Project Skeleton) adımında,
 4. PostgreSQL kur (yerel veritabanı motoru)
 5. pgAdmin veya DBeaver kur (veritabanı istemcisi)
 6. VS Code kur (doküman/SQL düzenleme)
-7. *(Faz 2'de)* Visual Studio 2022 + .NET 10 SDK
+7. *(Faz 4'te)* .NET 10 SDK — kuruldu, ama PATH çakışması var, bkz. `CLAUDE.md` §1

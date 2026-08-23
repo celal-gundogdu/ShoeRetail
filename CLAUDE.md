@@ -12,6 +12,7 @@
 | `docs/database/02-physical-blueprint.md` | Physical DB design log, table-by-table with rationale. Turkish. |
 | `docs/database/schema.sql` | Executable DDL mirroring the blueprint. |
 | `docs/architecture/folder-structure.md` | Repo layout rationale. |
+| `docs/architecture/02-backend-foundation.md` | **Faz 4 decision log** — solution structure, EF Core/Npgsql setup, connection-string strategy, the `shoeretail_test`/`shoeretail_dev` split, entity-mapping approach, `updated_at` trigger integration, test strategy, deferred items. Read before touching `src/` or `tests/`. Turkish. |
 | `docs/00-handoff/archive/README.md` | What the pivot changed and why. Read if a decision looks contradictory. |
 
 ⚠️ `docs/00-handoff/archive/` and `docs/database/archive/` contain **obsolete pre-pivot**

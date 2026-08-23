@@ -609,9 +609,15 @@ SMS/WhatsApp/e-posta pazarlama, çevrimdışı senkronizasyon, üretici için ta
 
 ## 11. YOL HARİTASI
 
+> ⚠️ Bu liste durum takibi için değil, kapsam referansı içindir — **güncel "şu an
+> neredeyiz" bilgisi için her zaman `CLAUDE.md` §9'a bakın**, burası değil. Bu dosya
+> son güncellendiğinde (Faz 3) burada da bir "ŞU AN" işareti vardı; canlı tutmak yerine
+> tek kaynağı (`CLAUDE.md`) yetkili kılmak daha güvenli — iki yerde aynı bilgiyi
+> güncellemeyi unutmak tam olarak bu şekilde oldu.
+
 ```
-FAZ 3   Veritabanı Tasarımı              ◀── ŞU AN (22 tablo)
-FAZ 4   Backend Temeli + EF Core + Migration
+FAZ 3   Veritabanı Tasarımı              ✅ tamamlandı
+FAZ 4   Backend Temeli + EF Core + Migration ✅ tamamlandı
 FAZ 5   Kimlik Doğrulama (JWT) + RBAC (2 rol)
 FAZ 6   WPF Temeli / MVVM / Navigasyon / Tema
 FAZ 7   Ürünler + Stok Kodu + Varyantlar
