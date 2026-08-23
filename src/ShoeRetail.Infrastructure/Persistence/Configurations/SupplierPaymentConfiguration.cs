@@ -1,0 +1,42 @@
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Metadata.Builders;
+using ShoeRetail.Domain;
+
+namespace ShoeRetail.Infrastructure.Persistence.Configurations;
+
+public sealed class SupplierPaymentConfiguration : IEntityTypeConfiguration<SupplierPayment>
+{
+    public void Configure(EntityTypeBuilder<SupplierPayment> builder)
+    {
+        builder.Property(p => p.Amount).HasPrecision(18, 2);
+        builder.Property(p => p.PaymentMethod).HasMaxLength(20).IsRequired();
+        builder.Property(p => p.ReferenceNo).HasMaxLength(100);
+        builder.Property(p => p.Status).HasMaxLength(20).HasDefaultValue("Active");
+        builder.Property(p => p.CreatedAt).HasDefaultValueSql("now()");
+        builder.Property(p => p.UpdatedAt).HasDefaultValueSql("now()");
+
+        builder.HasOne<Supplier>().WithMany().HasForeignKey(p => p.SupplierId).OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne<PurchaseOrder>().WithMany().HasForeignKey(p => p.PurchaseOrderId).OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne<AppUser>().WithMany().HasForeignKey(p => p.CreatedByUserId).OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne<AppUser>().WithMany().HasForeignKey(p => p.ReversedByUserId).OnDelete(DeleteBehavior.Restrict);
+
+        builder.HasIndex(p => new { p.SupplierId, p.PaymentDate }).HasDatabaseName("ix_supplier_payments_supplier_date");
+        builder.HasIndex(p => p.PurchaseOrderId).HasDatabaseName("ix_supplier_payments_purchase_order_id");
+        builder.HasIndex(p => p.PaymentDate).HasDatabaseName("ix_supplier_payments_payment_date");
+        builder.HasIndex(p => p.CreatedByUserId).HasDatabaseName("ix_supplier_payments_created_by");
+
+        builder.ToTable(tb =>
+        {
+            tb.HasCheckConstraint("chk_supplier_payments_amount_positive", "amount > 0");
+            tb.HasCheckConstraint("chk_supplier_payments_method",
+                "payment_method IN ('Cash', 'BankTransfer', 'CreditCard', 'Cheque', 'PromissoryNote')");
+            tb.HasCheckConstraint("chk_supplier_payments_status", "status IN ('Active', 'Reversed')");
+            tb.HasCheckConstraint("chk_supplier_payments_reversal_consistency", """
+                (status = 'Active' AND reversed_at IS NULL AND reversed_by_user_id IS NULL AND reversal_reason IS NULL)
+                OR
+                (status = 'Reversed' AND reversed_at IS NOT NULL AND reversed_by_user_id IS NOT NULL
+                    AND reversal_reason IS NOT NULL AND btrim(reversal_reason) <> '')
+                """);
+        });
+    }
+}
