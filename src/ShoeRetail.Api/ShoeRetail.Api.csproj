@@ -1,0 +1,24 @@
+﻿<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UserSecretsId>dc5140c4-d28d-4a5b-8f03-102f408513f4</UserSecretsId>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.11" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.11">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\ShoeRetail.Application\ShoeRetail.Application.csproj" />
+    <ProjectReference Include="..\ShoeRetail.Infrastructure\ShoeRetail.Infrastructure.csproj" />
+    <ProjectReference Include="..\ShoeRetail.Contracts\ShoeRetail.Contracts.csproj" />
+  </ItemGroup>
+
+</Project>

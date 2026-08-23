@@ -1,0 +1,14 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/ShoeRetail.Api/ShoeRetail.Api.csproj" />
+    <Project Path="src/ShoeRetail.Application/ShoeRetail.Application.csproj" />
+    <Project Path="src/ShoeRetail.Contracts/ShoeRetail.Contracts.csproj" />
+    <Project Path="src/ShoeRetail.Desktop/ShoeRetail.Desktop.csproj" />
+    <Project Path="src/ShoeRetail.Domain/ShoeRetail.Domain.csproj" />
+    <Project Path="src/ShoeRetail.Infrastructure/ShoeRetail.Infrastructure.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/ShoeRetail.Api.Tests/ShoeRetail.Api.Tests.csproj" />
+    <Project Path="tests/ShoeRetail.Domain.Tests/ShoeRetail.Domain.Tests.csproj" />
+  </Folder>
+</Solution>

@@ -41,11 +41,24 @@ before making decisions that depend on exact wording.
   money, stock, auth, audit, backups.
 - Dev machine: Windows 11, PostgreSQL 18 + pgAdmin local. **Port 5433, not 5432.**
   `psql` is at `C:\Program Files\PostgreSQL\18\bin\` (not on PATH); credentials live in
-  `%APPDATA%\postgresql\pgpass.conf`. Databases: `shoeretail_test` (owner: the
-  non-superuser `shoeretail` role — what the app connects as). There is no
-  `shoeretail_dev`; earlier versions of this file wrongly claimed there was.
+  `%APPDATA%\postgresql\pgpass.conf`. Two databases now, both owned by the non-superuser
+  `shoeretail` role: **`shoeretail_test`** — ephemeral, owned by the raw-SQL test harness
+  (`docs/database/tests/run-tests.ps1` drops and rebuilds it from `schema.sql` on every
+  run; never point the app or EF migrations at it, anything written there is designed to
+  be thrown away). **`shoeretail_dev`** (created 2026-08-23) — persistent, owned by EF
+  Core migrations; this is what the Api's `ConnectionStrings:Default` (in User Secrets)
+  points at. Rationale: mixing EF's migration-history table with a database that gets
+  dropped out from under it causes silent desync — see blueprint decision log in §12 if
+  this needs revisiting.
   Git repo `C:\PROJE`, private GitHub remote.
-  `src/` and `tests/` intentionally empty (Phase 4 not started).
+  **.NET 10 SDK (10.0.400) is installed but NOT first on PATH** — a separate .NET 9
+  SDK (9.0.302) lives at `C:\Program Files (x86)\dotnet-sdk-9.0.302-win-x64\` and
+  wins PATH resolution, so plain `dotnet` resolves to 9. Use the full path
+  `C:\Program Files\dotnet\dotnet.exe` (or Visual Studio, which has its own SDK
+  resolution) until PATH is fixed. Fixing it requires admin elevation (move
+  `C:\Program Files\dotnet\` ahead of the x86 entry in the **Machine** PATH env var)
+  — not done yet, do it in an elevated PowerShell when convenient.
+  `src/` and `tests/` now hold the Phase 4 solution skeleton (see §12).
 
 ---
 
@@ -76,17 +89,23 @@ receivables/payables, reports — all in one place.
 C# / .NET 10 · WPF+MVVM (Owner console) · Blazor Server (manufacturer portal, Phase 18)
 · ASP.NET Core Web API · EF Core · PostgreSQL · REST+JSON · **JWT auth** · Windows 11
 
-Planned solution structure (Phase 4, not created yet):
+Solution structure (created in Phase 4, see §12 for current progress):
 ```
 ShoeRetail.sln
-├── ShoeRetail.Domain          # entities, business concepts
-├── ShoeRetail.Application     # ALL business rules / use cases
-├── ShoeRetail.Infrastructure  # EF Core, PostgreSQL
-├── ShoeRetail.Contracts       # API DTOs (privacy boundary)
-├── ShoeRetail.Api             # controllers, auth, validation
-├── ShoeRetail.Desktop         # WPF
+├── src/ShoeRetail.Domain          # entities, business concepts
+├── src/ShoeRetail.Application     # ALL business rules / use cases
+├── src/ShoeRetail.Infrastructure  # EF Core, PostgreSQL
+├── src/ShoeRetail.Contracts       # API DTOs (privacy boundary)
+├── src/ShoeRetail.Api             # controllers, auth, validation
+├── src/ShoeRetail.Desktop         # WPF
+├── tests/ShoeRetail.Domain.Tests
+├── tests/ShoeRetail.Api.Tests
 └── (Phase 18) Blazor portal hosted inside ShoeRetail.Api
 ```
+Reference graph (enforces §3 rules at compile time — Desktop cannot reach Domain/
+Infrastructure even by accident): `Application → Domain` · `Infrastructure →
+Application, Domain` · `Api → Application, Infrastructure, Contracts` · `Desktop →
+Contracts only`. Test framework: xUnit.
 
 ### 🔒 Immutable architecture rules (prerequisites for cheap Blazor addition later)
 1. Business logic never lives in UI. ViewModels only display and call the API.
@@ -185,8 +204,8 @@ A backup strategy is incomplete until a restore has been tested.
 ## 9. Roadmap
 
 ```
-FAZ 3   Database Design            ◀── CURRENT (22 tables)
-FAZ 4   Backend foundation + EF Core + migrations
+FAZ 3   Database Design            ✅ DONE (22 tables, signed off)
+FAZ 4   Backend foundation + EF Core + migrations   ◀── CURRENT
 FAZ 5   JWT auth + RBAC
 FAZ 6   WPF shell / MVVM / navigation
 FAZ 7   Products + stock code + variants
@@ -205,8 +224,8 @@ FAZ 19  Testing / security / performance
 FAZ 20  Backup / installer / documentation / handover
 ```
 
-Do NOT start C# entities / EF Core / WPF until all 22 tables are approved and the user
-explicitly signs off on the final blueprint.
+22 tables approved, final blueprint signed off by user 2026-08-23. Phase 4 (C# entities /
+EF Core / WPF) is now underway — see §12 for exact progress.
 
 ---
 
@@ -272,29 +291,23 @@ Index hints from the spec: `products(stock_code)` unique; `orders(order_number)`
 
 ## 12. Immediate Next Action
 
-**STEP 2.2 is COMPLETE — all 22 tables are designed, approved, and written** into
-`docs/database/02-physical-blueprint.md` and `docs/database/schema.sql`.
-
-✅ **The schema is tested and green.** `docs/database/tests/` holds a runnable suite:
-
+**FAZ 3 is COMPLETE.** All 22 tables designed, approved, tested (168 constraint + 11
+reconciliation tests, all green — `docs/database/tests/`), and signed off by the user
+on 2026-08-23. Re-run the suite after any future change to `schema.sql`:
 ```
 powershell -ExecutionPolicy Bypass -File docs\database\tests\run-tests.ps1
 ```
 
-It drops and rebuilds `shoeretail_test` from `schema.sql`, seeds it, then runs
-168 constraint tests + 11 reconciliation ("golden") tests. All pass; 79% of the 129
-constraints/unique indexes are exercised (the rest are FKs, sampled by family). Read
-`docs/database/tests/README.md` before touching it — it documents the test harness and
-four traps that already cost time (psql dollar-quote nesting, identity sequences vs
-explicit ids, non-idempotent reset, PowerShell 5.1 native stderr).
+**FAZ 4 is underway.** Progress so far:
 
-**Re-run the suite after ANY change to `schema.sql`.**
+| Step | Status |
+|---|---|
+| Solution + 8-project skeleton (`src/`, `tests/`) created, referenced, builds green (0 warnings/errors) | ✅ Done 2026-08-23 |
+| .NET 10 SDK installed (see §1 for the PATH caveat — full path needed until fixed) | ✅ Done 2026-08-23 |
+| NuGet packages: EF Core 10.0.11 + Npgsql provider 10.0.3 in Infrastructure; `dotnet-ef` as a local tool (`dotnet-tools.json`) | ✅ Done 2026-08-23 |
+| `AppDbContext` skeleton (`src/ShoeRetail.Infrastructure/Persistence/`) + `AddInfrastructure()` DI extension + config-driven connection string. Real password lives ONLY in `dotnet user-secrets` (Api project), never in `appsettings.json`. Verified end-to-end via a temporary `/health/db` endpoint against real `shoeretail_test` — got `200 OK`. | ✅ Done 2026-08-23 |
+| First entity `StoreProfile` mapped (`EFCore.NamingConventions` for snake_case bridging), migration `InitialCreate_StoreProfile` generated and applied to `shoeretail_dev`, verified with `psql \d` (types/defaults/6 CHECK constraints match `schema.sql` exactly) and a live CHECK-violation test | ✅ Done 2026-08-23 |
+| Remaining 21 entities mapped, mirroring `schema.sql` table-by-table, one migration per table (same pattern as `StoreProfile`) | ⬜ Next |
+| `updated_at` auto-refresh decision (trigger vs `SaveChanges` override — open question from blueprint §"Tekrar Eden Desenler" #6) | ⬜ |
 
-Bug the first run caught (now fixed, with regression tests): four CHECK constraints used
-`btrim(col) <> ''` on a nullable column with no `IS NOT NULL` guard. `btrim(NULL) <> ''`
-is `NULL`, and PostgreSQL treats a `NULL` CHECK result as satisfied — so rows with no
-justification were silently accepted. See blueprint "Tekrar Eden Desenler" #5; golden
-test M.1 guards against a repeat.
-
-Remaining before Phase 4: user signs off on the final blueprint. Only then start
-C# entities / EF Core / WPF.
+Project reference graph and template choices are recorded in §3.
