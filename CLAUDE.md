@@ -39,8 +39,12 @@ before making decisions that depend on exact wording.
   no microservices, no premature abstraction. Scale is small.
   **"Simple where possible, robust where necessary"** — robustness prioritized for
   money, stock, auth, audit, backups.
-- Dev machine: Windows 11, PostgreSQL + pgAdmin working locally, dev DB
-  `shoeretail_dev`. Git repo `C:\PROJE`, private GitHub remote.
+- Dev machine: Windows 11, PostgreSQL 18 + pgAdmin local. **Port 5433, not 5432.**
+  `psql` is at `C:\Program Files\PostgreSQL\18\bin\` (not on PATH); credentials live in
+  `%APPDATA%\postgresql\pgpass.conf`. Databases: `shoeretail_test` (owner: the
+  non-superuser `shoeretail` role — what the app connects as). There is no
+  `shoeretail_dev`; earlier versions of this file wrongly claimed there was.
+  Git repo `C:\PROJE`, private GitHub remote.
   `src/` and `tests/` intentionally empty (Phase 4 not started).
 
 ---
@@ -229,28 +233,28 @@ explicitly signs off on the final blueprint.
 
 | # | Table | Status |
 |---|---|---|
-| 1 | `store_profile` | ⬜ |
-| 2 | `customers` | ⬜ (v1 design valid, re-confirm) |
-| 3 | `suppliers` | ⬜ NEW |
-| 4 | `users` | ⬜ CHANGED (role/supplier_id) |
-| 5 | `products` | ⬜ CHANGED (+ stock_code) |
-| 6 | `product_variants` | ⬜ |
-| 7 | `inventory` | ⬜ CHANGED (+ low_stock_threshold) |
-| 8 | `orders` | ⬜ CHANGED (no approval_status) |
-| 9 | `order_items` | ⬜ |
-| 10 | `order_history` | ⬜ |
-| 11 | `purchase_orders` | ⬜ NEW |
-| 12 | `purchase_order_items` | ⬜ NEW |
-| 13 | `purchase_order_history` | ⬜ NEW |
-| 14 | `inventory_movements` | ⬜ (now placed after both order tables — FK ordering resolved) |
-| 15 | `payment_plans` | ⬜ |
-| 16 | `installments` | ⬜ |
-| 17 | `payments` | ⬜ |
-| 18 | `payment_allocations` | ⬜ |
-| 19 | `account_transactions` | ⬜ |
-| 20 | `supplier_payments` | ⬜ NEW |
-| 21 | `supplier_transactions` | ⬜ NEW |
-| 22 | `audit_logs` | ⬜ |
+| 1 | `store_profile` | ✅ |
+| 2 | `customers` | ✅ (v1 design valid, re-confirm) |
+| 3 | `suppliers` | ✅ NEW |
+| 4 | `users` | ✅ CHANGED (role/supplier_id) |
+| 5 | `products` | ✅ CHANGED (+ stock_code) |
+| 6 | `product_variants` | ✅ |
+| 7 | `inventory` | ✅ CHANGED (+ low_stock_threshold) |
+| 8 | `orders` | ✅ CHANGED (no approval_status) |
+| 9 | `order_items` | ✅ |
+| 10 | `order_history` | ✅ |
+| 11 | `purchase_orders` | ✅ NEW |
+| 12 | `purchase_order_items` | ✅ NEW |
+| 13 | `purchase_order_history` | ✅ NEW |
+| 14 | `inventory_movements` | ✅ (now placed after both order tables — FK ordering resolved) |
+| 15 | `payment_plans` | ✅ |
+| 16 | `installments` | ✅ |
+| 17 | `payments` | ✅ |
+| 18 | `payment_allocations` | ✅ |
+| 19 | `account_transactions` | ✅ |
+| 20 | `supplier_payments` | ✅ NEW |
+| 21 | `supplier_transactions` | ✅ NEW |
+| 22 | `audit_logs` | ✅ |
 
 Enums to physicalize (all `varchar` + `CHECK`): `UserRole`, `CustomerType`,
 `OrderStatus`, `PurchaseOrderStatus`, `InventoryMovementType`, `InstallmentType`,
@@ -268,6 +272,29 @@ Index hints from the spec: `products(stock_code)` unique; `orders(order_number)`
 
 ## 12. Immediate Next Action
 
-STEP 2.2, table **1/22 — `store_profile`**. Then proceed down the table list above,
-one table at a time, waiting for explicit approval before writing each into
+**STEP 2.2 is COMPLETE — all 22 tables are designed, approved, and written** into
 `docs/database/02-physical-blueprint.md` and `docs/database/schema.sql`.
+
+✅ **The schema is tested and green.** `docs/database/tests/` holds a runnable suite:
+
+```
+powershell -ExecutionPolicy Bypass -File docs\database\tests\run-tests.ps1
+```
+
+It drops and rebuilds `shoeretail_test` from `schema.sql`, seeds it, then runs
+168 constraint tests + 11 reconciliation ("golden") tests. All pass; 79% of the 129
+constraints/unique indexes are exercised (the rest are FKs, sampled by family). Read
+`docs/database/tests/README.md` before touching it — it documents the test harness and
+four traps that already cost time (psql dollar-quote nesting, identity sequences vs
+explicit ids, non-idempotent reset, PowerShell 5.1 native stderr).
+
+**Re-run the suite after ANY change to `schema.sql`.**
+
+Bug the first run caught (now fixed, with regression tests): four CHECK constraints used
+`btrim(col) <> ''` on a nullable column with no `IS NOT NULL` guard. `btrim(NULL) <> ''`
+is `NULL`, and PostgreSQL treats a `NULL` CHECK result as satisfied — so rows with no
+justification were silently accepted. See blueprint "Tekrar Eden Desenler" #5; golden
+test M.1 guards against a repeat.
+
+Remaining before Phase 4: user signs off on the final blueprint. Only then start
+C# entities / EF Core / WPF.
