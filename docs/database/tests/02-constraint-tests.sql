@@ -117,6 +117,24 @@ SELECT t_fail('store_profile','1.4','Gecersiz para birimi reddedilir',
   $$UPDATE store_profile SET currency_code = 'try' WHERE id = 1$$);
 SELECT t_bump();
 
+-- Trigger testi: caller kasitli olarak eski bir tarih yazmaya calisir,
+-- BEFORE UPDATE trigger'i bunu now() ile ezmelidir (bkz. blueprint,
+-- "Tekrar Eden Desenler" #6 - Faz 4 karari).
+SELECT t_ok('store_profile','1.5','set_updated_at trigger''i eski degeri ezer',
+  $$
+    DO $do$
+    DECLARE v_after timestamptz;
+    BEGIN
+        UPDATE store_profile SET updated_at = '2000-01-01' WHERE id = 1;
+        SELECT updated_at INTO v_after FROM store_profile WHERE id = 1;
+        IF v_after < now() - interval '1 minute' THEN
+            RAISE EXCEPTION 'trigger calismadi: updated_at = %', v_after;
+        END IF;
+    END
+    $do$
+  $$);
+SELECT t_bump();
+
 
 -- ════════════════════════════════════════════════════════════
 --  2) customers

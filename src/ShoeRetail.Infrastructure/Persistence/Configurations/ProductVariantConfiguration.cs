@@ -15,7 +15,7 @@ public sealed class ProductVariantConfiguration : IEntityTypeConfiguration<Produ
         builder.Property(v => v.SalePrice).HasPrecision(18, 2);
         builder.Property(v => v.IsActive).HasDefaultValue(true);
         builder.Property(v => v.CreatedAt).HasDefaultValueSql("now()");
-        builder.Property(v => v.UpdatedAt).HasDefaultValueSql("now()");
+        builder.Property(v => v.UpdatedAt).HasDefaultValueSql("now()").ValueGeneratedOnAddOrUpdate();
 
         builder.HasOne<Product>().WithMany().HasForeignKey(v => v.ProductId).OnDelete(DeleteBehavior.Restrict);
 

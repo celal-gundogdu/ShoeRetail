@@ -1499,5 +1499,85 @@ CREATE INDEX ix_audit_logs_created_at
 
 
 -- ============================================================
+--  updated_at OTOMATİK TAZELEME (Faz 4 kararı)
+--
+--  Karar: PostgreSQL BEFORE UPDATE trigger'ı, EF Core SaveChanges override DEĞİL.
+--  Gerekçe: "DB Kısıtı mı, Uygulama Kuralı mı?" ölçütüne göre bu tek satırlı,
+--  tek tablolu bir kuraldır → DB'nin işi. Trigger, kaynağı ne olursa olsun
+--  (EF Core, psql, pgAdmin, ileride başka bir entegrasyon) HER UPDATE'i kapsar;
+--  SaveChanges override'ı yalnızca C# tarafından geçeni yakalardı.
+--
+--  BEFORE UPDATE trigger'ı satırın diske yazılmasından ÖNCE çalışır ve NEW
+--  kaydını değiştirir — bu yüzden çağıran ne gönderirse göndersin (eski değer,
+--  boş değer, kasıtlı sahte bir tarih) trigger her zaman kazanır. Uygulama
+--  kodunun updated_at'i hiç düşünmesine gerek yoktur.
+-- ============================================================
+CREATE OR REPLACE FUNCTION set_updated_at()
+RETURNS trigger AS $$
+BEGIN
+    NEW.updated_at = now();
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- updated_at kolonu olan 14 tablo (append-only tablolarda bu kolon zaten yok).
+CREATE TRIGGER trg_store_profile_set_updated_at
+    BEFORE UPDATE ON store_profile
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+CREATE TRIGGER trg_customers_set_updated_at
+    BEFORE UPDATE ON customers
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+CREATE TRIGGER trg_suppliers_set_updated_at
+    BEFORE UPDATE ON suppliers
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+CREATE TRIGGER trg_users_set_updated_at
+    BEFORE UPDATE ON users
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+CREATE TRIGGER trg_products_set_updated_at
+    BEFORE UPDATE ON products
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+CREATE TRIGGER trg_product_variants_set_updated_at
+    BEFORE UPDATE ON product_variants
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+CREATE TRIGGER trg_inventory_set_updated_at
+    BEFORE UPDATE ON inventory
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+CREATE TRIGGER trg_orders_set_updated_at
+    BEFORE UPDATE ON orders
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+CREATE TRIGGER trg_purchase_orders_set_updated_at
+    BEFORE UPDATE ON purchase_orders
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+CREATE TRIGGER trg_purchase_order_items_set_updated_at
+    BEFORE UPDATE ON purchase_order_items
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+CREATE TRIGGER trg_payment_plans_set_updated_at
+    BEFORE UPDATE ON payment_plans
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+CREATE TRIGGER trg_installments_set_updated_at
+    BEFORE UPDATE ON installments
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+CREATE TRIGGER trg_payments_set_updated_at
+    BEFORE UPDATE ON payments
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+CREATE TRIGGER trg_supplier_payments_set_updated_at
+    BEFORE UPDATE ON supplier_payments
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+
+-- ============================================================
 --  22/22 TABLO TAMAMLANDI
 -- ============================================================

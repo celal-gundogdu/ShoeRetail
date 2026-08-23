@@ -11,7 +11,7 @@ public sealed class InstallmentConfiguration : IEntityTypeConfiguration<Installm
         builder.Property(i => i.InstallmentType).HasMaxLength(20).IsRequired();
         builder.Property(i => i.Amount).HasPrecision(18, 2);
         builder.Property(i => i.CreatedAt).HasDefaultValueSql("now()");
-        builder.Property(i => i.UpdatedAt).HasDefaultValueSql("now()");
+        builder.Property(i => i.UpdatedAt).HasDefaultValueSql("now()").ValueGeneratedOnAddOrUpdate();
 
         builder.HasOne<PaymentPlan>().WithMany().HasForeignKey(i => i.PaymentPlanId).OnDelete(DeleteBehavior.Restrict);
 

@@ -86,7 +86,7 @@ Veritabanı yeşil olması, sistemin doğru çalışacağı anlamına gelmez:
 | Eşzamanlılık | "Son 1 adet için iki eşzamanlı sipariş" senaryosu transaction/kilit gerektirir | Faz 4+ |
 | `inventory` ↔ `inventory_movements` senkronu | Bu senkronizasyon uygulama kodunun işi, henüz yazılmadı | Faz 8 |
 | Yetkilendirme / gizlilik | Üreticinin başkasının verisini görememesi API katmanında | Faz 5 / 18 |
-| `updated_at` tazeleme | Trigger mı EF `SaveChanges` mi — karar verilmedi | Faz 4 |
+| ~~`updated_at` tazeleme~~ | ~~Trigger mı EF `SaveChanges` mi~~ | **Çözüldü (Faz 4): trigger. Test 1.5 + M.2** |
 | Performans / index etkinliği | Gerçek veri hacmi yok, ölçüm anlamsız | Faz 19 |
 
 Yani bu paketin verdiği güvence şudur: **şema kurulur ve tek satırlık kurallar

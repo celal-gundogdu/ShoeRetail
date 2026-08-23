@@ -28,7 +28,7 @@ public sealed class StoreProfileConfiguration : IEntityTypeConfiguration<StorePr
         builder.Property(p => p.StockCodeDigits).HasDefaultValue((short)6);
         builder.Property(p => p.DefaultLowStockThreshold).HasDefaultValue(5);
 
-        builder.Property(p => p.UpdatedAt).HasDefaultValueSql("now()");
+        builder.Property(p => p.UpdatedAt).HasDefaultValueSql("now()").ValueGeneratedOnAddOrUpdate();
 
         builder.ToTable(tb =>
         {

@@ -205,7 +205,8 @@ A backup strategy is incomplete until a restore has been tested.
 
 ```
 FAZ 3   Database Design            ✅ DONE (22 tables, signed off)
-FAZ 4   Backend foundation + EF Core + migrations   ◀── CURRENT
+FAZ 4   Backend foundation + EF Core + migrations   ✅ DONE
+FAZ 5   JWT auth + RBAC            ◀── CURRENT
 FAZ 5   JWT auth + RBAC
 FAZ 6   WPF shell / MVVM / navigation
 FAZ 7   Products + stock code + variants
@@ -308,7 +309,9 @@ powershell -ExecutionPolicy Bypass -File docs\database\tests\run-tests.ps1
 | `AppDbContext` skeleton (`src/ShoeRetail.Infrastructure/Persistence/`) + `AddInfrastructure()` DI extension + config-driven connection string. Real password lives ONLY in `dotnet user-secrets` (Api project), never in `appsettings.json`. Verified end-to-end via a temporary `/health/db` endpoint against real `shoeretail_test` — got `200 OK`. | ✅ Done 2026-08-23 |
 | First entity `StoreProfile` mapped (`EFCore.NamingConventions` for snake_case bridging), migration `InitialCreate_StoreProfile` generated and applied to `shoeretail_dev`, verified with `psql \d` (types/defaults/6 CHECK constraints match `schema.sql` exactly) and a live CHECK-violation test | ✅ Done 2026-08-23 |
 | **All 22 entities mapped** (`src/ShoeRetail.Domain/*.cs` + one `IEntityTypeConfiguration<T>` per table in `src/ShoeRetail.Infrastructure/Persistence/Configurations/`), single migration `AddRemainingTables` applied to `shoeretail_dev`. Verified: 73/73 named CHECK constraints match `schema.sql` by name (`diff` clean), FK chain insert (supplier→product→variant→inventory) works, computed column `quantity_available` computes correctly (50−10=40 confirmed live), `chk_users_role_supplier_consistency` correctly rejects a Manufacturer without `supplier_id`. No navigation properties yet — FK scalar ids only (`CustomerId` etc.), deliberate scope cut for speed; add navigation properties in Application layer once real query patterns are known. **Known minor deviation from `schema.sql`:** EF Core's Npgsql provider auto-creates an index on every FK column by convention, so `shoeretail_dev` has a handful of extra indexes beyond what the blueprint explicitly listed (e.g. `ix_supplier_payments_reversed_by_user_id`). Harmless (extra index, not a missing one) but not identical — revisit if it matters later. | ✅ Done 2026-08-24 |
-| `updated_at` auto-refresh decision (trigger vs `SaveChanges` override — open question from blueprint §"Tekrar Eden Desenler" #6) | ⬜ Next |
-| Navigation properties (Order→Items, Customer→Orders, etc.) — add once Application-layer query patterns are known | ⬜ |
+| **`updated_at` auto-refresh decision — RESOLVED: PostgreSQL `BEFORE UPDATE` trigger** (`set_updated_at()` + one trigger per table with `updated_at`, 14 tables). Rationale: per the blueprint's own "DB constraint vs Application rule" test, this is a single-row/single-table rule → belongs in the DB; a trigger also covers writes from outside EF (psql, pgAdmin), which a `SaveChanges` override would miss. Added to `schema.sql` (new section before "22/22 TABLO"), to the blueprint (§"Tekrar Eden Desenler" #6, now marked resolved), and as EF migration `AddUpdatedAtTriggers`. Every `UpdatedAt` property is now `ValueGeneratedOnAddOrUpdate()` so EF reads back the trigger-computed value via `RETURNING` instead of overwriting it. Test coverage: SQL suite test `1.5` (trigger overrides a deliberately wrong value) + golden meta-test `M.2` (every table with `updated_at` has the matching trigger — 169 constraint + 12 golden tests all green) + two new EF Core integration tests in `ShoeRetail.Api.Tests/AppDbContextTests.cs` proving the whole round-trip works through the real ORM against `shoeretail_dev`, not just raw SQL. | ✅ Done 2026-08-24 |
+| Navigation properties (Order→Items, Customer→Orders, etc.) — deliberately deferred, add once Application-layer query patterns are known (Faz 7+) | ⬜ (not a Faz 4 blocker) |
+
+**FAZ 4 is COMPLETE.** All items in the roadmap line ("Backend foundation + EF Core + migrations") are done and verified both at the SQL level and through the real EF Core runtime. FAZ 5 (JWT auth + RBAC) is next.
 
 Project reference graph and template choices are recorded in §3.

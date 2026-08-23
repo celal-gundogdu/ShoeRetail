@@ -14,7 +14,7 @@ public sealed class PurchaseOrderConfiguration : IEntityTypeConfiguration<Purcha
         builder.Property(o => o.TotalAmount).HasPrecision(18, 2).HasDefaultValue(0m);
         builder.Property(o => o.SupplierReference).HasMaxLength(100);
         builder.Property(o => o.CreatedAt).HasDefaultValueSql("now()");
-        builder.Property(o => o.UpdatedAt).HasDefaultValueSql("now()");
+        builder.Property(o => o.UpdatedAt).HasDefaultValueSql("now()").ValueGeneratedOnAddOrUpdate();
 
         builder.HasOne<Supplier>().WithMany().HasForeignKey(o => o.SupplierId).OnDelete(DeleteBehavior.Restrict);
         builder.HasOne<AppUser>().WithMany().HasForeignKey(o => o.CreatedByUserId).OnDelete(DeleteBehavior.Restrict);

@@ -21,7 +21,7 @@ public sealed class CustomerConfiguration : IEntityTypeConfiguration<Customer>
         builder.Property(c => c.CreditLimit).HasPrecision(18, 2);
         builder.Property(c => c.IsActive).HasDefaultValue(true);
         builder.Property(c => c.CreatedAt).HasDefaultValueSql("now()");
-        builder.Property(c => c.UpdatedAt).HasDefaultValueSql("now()");
+        builder.Property(c => c.UpdatedAt).HasDefaultValueSql("now()").ValueGeneratedOnAddOrUpdate();
 
         builder.HasIndex(c => c.Phone).HasDatabaseName("ix_customers_phone");
         builder.HasIndex(c => c.FullName).HasDatabaseName("ix_customers_full_name");

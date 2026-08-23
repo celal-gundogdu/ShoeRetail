@@ -15,7 +15,7 @@ public sealed class AppUserConfiguration : IEntityTypeConfiguration<AppUser>
         builder.Property(u => u.Role).HasMaxLength(20).IsRequired();
         builder.Property(u => u.IsActive).HasDefaultValue(true);
         builder.Property(u => u.CreatedAt).HasDefaultValueSql("now()");
-        builder.Property(u => u.UpdatedAt).HasDefaultValueSql("now()");
+        builder.Property(u => u.UpdatedAt).HasDefaultValueSql("now()").ValueGeneratedOnAddOrUpdate();
 
         builder.HasOne<Supplier>().WithMany().HasForeignKey(u => u.SupplierId).OnDelete(DeleteBehavior.Restrict);
 

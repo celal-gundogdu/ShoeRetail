@@ -19,7 +19,7 @@ public sealed class ProductConfiguration : IEntityTypeConfiguration<Product>
         builder.Property(p => p.SupplierProductCode).HasMaxLength(100);
         builder.Property(p => p.IsActive).HasDefaultValue(true);
         builder.Property(p => p.CreatedAt).HasDefaultValueSql("now()");
-        builder.Property(p => p.UpdatedAt).HasDefaultValueSql("now()");
+        builder.Property(p => p.UpdatedAt).HasDefaultValueSql("now()").ValueGeneratedOnAddOrUpdate();
 
         builder.HasOne<Supplier>().WithMany().HasForeignKey(p => p.SupplierId).OnDelete(DeleteBehavior.Restrict);
 

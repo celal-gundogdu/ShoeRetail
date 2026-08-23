@@ -14,7 +14,7 @@ public sealed class InventoryConfiguration : IEntityTypeConfiguration<Inventory>
             .HasComputedColumnSql("quantity_on_hand - quantity_reserved", stored: true);
         builder.Property(i => i.LowStockThreshold).HasDefaultValue(0);
         builder.Property(i => i.CreatedAt).HasDefaultValueSql("now()");
-        builder.Property(i => i.UpdatedAt).HasDefaultValueSql("now()");
+        builder.Property(i => i.UpdatedAt).HasDefaultValueSql("now()").ValueGeneratedOnAddOrUpdate();
 
         builder.HasOne<ProductVariant>().WithMany().HasForeignKey(i => i.ProductVariantId).OnDelete(DeleteBehavior.Restrict);
 

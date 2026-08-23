@@ -13,7 +13,7 @@ public sealed class PaymentConfiguration : IEntityTypeConfiguration<Payment>
         builder.Property(p => p.ReferenceNo).HasMaxLength(100);
         builder.Property(p => p.Status).HasMaxLength(20).HasDefaultValue("Active");
         builder.Property(p => p.CreatedAt).HasDefaultValueSql("now()");
-        builder.Property(p => p.UpdatedAt).HasDefaultValueSql("now()");
+        builder.Property(p => p.UpdatedAt).HasDefaultValueSql("now()").ValueGeneratedOnAddOrUpdate();
 
         builder.HasOne<Customer>().WithMany().HasForeignKey(p => p.CustomerId).OnDelete(DeleteBehavior.Restrict);
         builder.HasOne<AppUser>().WithMany().HasForeignKey(p => p.CreatedByUserId).OnDelete(DeleteBehavior.Restrict);

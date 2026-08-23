@@ -18,7 +18,7 @@ public sealed class SupplierConfiguration : IEntityTypeConfiguration<Supplier>
         builder.Property(s => s.District).HasMaxLength(100);
         builder.Property(s => s.IsActive).HasDefaultValue(true);
         builder.Property(s => s.CreatedAt).HasDefaultValueSql("now()");
-        builder.Property(s => s.UpdatedAt).HasDefaultValueSql("now()");
+        builder.Property(s => s.UpdatedAt).HasDefaultValueSql("now()").ValueGeneratedOnAddOrUpdate();
 
         builder.HasIndex(s => s.CompanyName).HasDatabaseName("ix_suppliers_company_name");
         builder.HasIndex(s => s.Phone).HasDatabaseName("ix_suppliers_phone");

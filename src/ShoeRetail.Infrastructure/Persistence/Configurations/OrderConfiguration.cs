@@ -13,7 +13,7 @@ public sealed class OrderConfiguration : IEntityTypeConfiguration<Order>
         builder.Property(o => o.Status).HasMaxLength(20).HasDefaultValue("Received");
         builder.Property(o => o.TotalAmount).HasPrecision(18, 2).HasDefaultValue(0m);
         builder.Property(o => o.CreatedAt).HasDefaultValueSql("now()");
-        builder.Property(o => o.UpdatedAt).HasDefaultValueSql("now()");
+        builder.Property(o => o.UpdatedAt).HasDefaultValueSql("now()").ValueGeneratedOnAddOrUpdate();
 
         builder.HasOne<Customer>().WithMany().HasForeignKey(o => o.CustomerId).OnDelete(DeleteBehavior.Restrict);
         builder.HasOne<AppUser>().WithMany().HasForeignKey(o => o.CreatedByUserId).OnDelete(DeleteBehavior.Restrict);

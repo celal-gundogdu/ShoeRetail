@@ -85,6 +85,27 @@ SELECT g_bos('M.1',
   $q$);
 
 
+-- updated_at kolonu olup set_updated_at trigger'i eksik olan tablo (Faz 4 karari).
+-- Yeni bir tabloya updated_at eklenip trigger'i unutulursa bu test yakalar.
+SELECT g_bos('M.2',
+  'updated_at kolonu olup set_updated_at trigger''i olmayan tablo',
+  $q$
+    SELECT t.relname
+    FROM pg_class t
+    JOIN pg_namespace n ON n.oid = t.relnamespace
+    JOIN pg_attribute a ON a.attrelid = t.oid
+    WHERE n.nspname = 'public'
+      AND t.relkind = 'r'
+      AND a.attname = 'updated_at'
+      AND NOT a.attisdropped
+      AND NOT EXISTS (
+          SELECT 1 FROM pg_trigger tr
+          WHERE tr.tgrelid = t.oid
+            AND tr.tgname = 'trg_' || t.relname || '_set_updated_at'
+      )
+  $q$);
+
+
 -- ════════════════════════════════════════════════════════════
 --  FİNANS: perakendeci tarafı
 -- ════════════════════════════════════════════════════════════

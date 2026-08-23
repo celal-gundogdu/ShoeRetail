@@ -20,7 +20,7 @@ public sealed class PurchaseOrderItemConfiguration : IEntityTypeConfiguration<Pu
         builder.Property(i => i.ReceivedTotal).HasPrecision(18, 2)
             .HasComputedColumnSql("received_quantity * unit_purchase_price", stored: true);
         builder.Property(i => i.CreatedAt).HasDefaultValueSql("now()");
-        builder.Property(i => i.UpdatedAt).HasDefaultValueSql("now()");
+        builder.Property(i => i.UpdatedAt).HasDefaultValueSql("now()").ValueGeneratedOnAddOrUpdate();
 
         builder.HasOne<PurchaseOrder>().WithMany().HasForeignKey(i => i.PurchaseOrderId).OnDelete(DeleteBehavior.Restrict);
         builder.HasOne<ProductVariant>().WithMany().HasForeignKey(i => i.ProductVariantId).OnDelete(DeleteBehavior.Restrict);

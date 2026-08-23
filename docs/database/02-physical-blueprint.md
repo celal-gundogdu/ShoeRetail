@@ -91,10 +91,26 @@ ediyordu. İlk test koşusunda yakalandı (bkz. `tests/` — test 19.7 ve 21.8).
 `tests/03-golden-tests.sql` içindeki meta-test, guard'sız yazılmış yeni bir kısıt
 eklenirse bunu otomatik yakalar.
 
-**6. `updated_at` henüz otomatik değil**
-`DEFAULT now()` yalnızca INSERT anında çalışır. UPDATE'te tazelenmesi için
-Faz 4'te karar verilecek: PostgreSQL `BEFORE UPDATE` trigger'ı (DB seviyesinde garanti)
-veya EF Core `SaveChanges` override (uygulama seviyesinde). Şimdilik açık bırakıldı.
+**6. `updated_at` otomatik tazeleme — Faz 4'te karara bağlandı**
+`DEFAULT now()` yalnızca INSERT anında çalışır. UPDATE'te tazelenmesi için iki seçenek
+vardı: PostgreSQL `BEFORE UPDATE` trigger'ı (DB seviyesinde garanti) veya EF Core
+`SaveChanges` override (uygulama seviyesinde).
+
+**Karar: trigger.** Bu bölümün en üstündeki "DB Kısıtı mı, Uygulama Kuralı mı?"
+ölçütüne göre `updated_at = now()` tek satırlı, tek tablolu bir kuraldır — DB'nin işi.
+Trigger, kaynağı ne olursa olsun (EF Core, psql, pgAdmin, ileride başka bir entegrasyon)
+her UPDATE'i kapsar; `SaveChanges` override'ı yalnızca C# tarafından geçeni yakalardı.
+`BEFORE UPDATE` trigger'ı satırın diske yazılmasından önce çalışıp `NEW` kaydını
+değiştirdiği için, çağıran ne gönderirse göndersin trigger her zaman kazanır —
+uygulama kodunun `updated_at`'i hiç düşünmesine gerek kalmaz.
+
+Uygulama: `set_updated_at()` fonksiyonu + `updated_at` kolonu olan 14 tabloya
+(`store_profile`, `customers`, `suppliers`, `users`, `products`, `product_variants`,
+`inventory`, `orders`, `purchase_orders`, `purchase_order_items`, `payment_plans`,
+`installments`, `payments`, `supplier_payments`) birer trigger. `schema.sql`'in sonunda
+(bkz. "updated_at OTOMATİK TAZELEME"). EF Core tarafında karşılığı: her `updated_at`
+alanı `ValueGeneratedOnAddOrUpdate()` ile işaretlendi — EF artık bu kolona hiç yazmıyor,
+UPDATE sonrası trigger'ın hesapladığı gerçek değeri `RETURNING` ile geri okuyor.
 
 ### DB Kısıtı mı, Uygulama Kuralı mı?
 
