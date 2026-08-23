@@ -10,7 +10,7 @@ büyür: burada *neden*, orada *ne*.
 > `archive/v1-physical-blueprint.md` içindedir ve **geçersizdir**. Ne değiştiği için
 > `docs/00-handoff/archive/README.md`.
 
-**Durum:** 14/22 tablo tamamlandı.
+**Durum:** ✅ 22/22 tablo tamamlandı.
 
 ---
 
@@ -57,7 +57,41 @@ CREATE UNIQUE INDEX ux_product_variants_barcode
 PostgreSQL, foreign key kolonlarına **otomatik index eklemez**. Her FK için index elle
 yazılır (JOIN performansı ve parent silme/kilit davranışı için).
 
-**5. `updated_at` henüz otomatik değil**
+**5. 🔴 `CHECK` içinde `NULL` sonucu — sessiz delik**
+
+Bir `CHECK` ifadesi `TRUE` veya `NULL` döndüğünde PostgreSQL satırı **kabul eder**;
+yalnızca `FALSE` reddeder. Nullable bir kolon üzerinde `btrim(col) <> ''` yazmak bu
+yüzden koruma sağlamaz:
+
+```
+btrim(NULL) <> ''   →   NULL   (TRUE değil!)
+FALSE OR FALSE OR NULL  →  NULL  →  satır KABUL edilir
+```
+
+Bu tuzağa **fiilen düştük**: `account_transactions`, `supplier_transactions`,
+`payments` ve `supplier_transactions` kısıtları gerekçesiz kayıtları sessizce kabul
+ediyordu. İlk test koşusunda yakalandı (bkz. `tests/` — test 19.7 ve 21.8).
+
+**Kural:** nullable bir kolonu bir `CHECK` dalında kullanıyorsan, önce açık
+`IS NOT NULL` yaz:
+
+```sql
+-- ❌ Guard yok: NULL geçer
+(transaction_type = 'Adjustment' AND btrim(description) <> '')
+
+-- ✅ Doğru
+(transaction_type = 'Adjustment'
+    AND description IS NOT NULL
+    AND btrim(description) <> '')
+```
+
+`NOT NULL` tanımlı kolonlarda gerekmez (`store_profile.store_name`,
+`order_items.*_snapshot` gibi) — orada `NULL` zaten imkânsızdır.
+
+`tests/03-golden-tests.sql` içindeki meta-test, guard'sız yazılmış yeni bir kısıt
+eklenirse bunu otomatik yakalar.
+
+**6. `updated_at` henüz otomatik değil**
 `DEFAULT now()` yalnızca INSERT anında çalışır. UPDATE'te tazelenmesi için
 Faz 4'te karar verilecek: PostgreSQL `BEFORE UPDATE` trigger'ı (DB seviyesinde garanti)
 veya EF Core `SaveChanges` override (uygulama seviyesinde). Şimdilik açık bırakıldı.
@@ -98,14 +132,14 @@ verdiği tablodan **sonra** oluşturulmalıdır.
 | 12 | `purchase_order_items` | purchase_orders, product_variants | ✅ |
 | 13 | `purchase_order_history` | purchase_orders, users | ✅ |
 | 14 | `inventory_movements` | product_variants, orders, purchase_orders, users | ✅ |
-| 15 | `payment_plans` | orders, users | ⬜ |
-| 16 | `installments` | payment_plans | ⬜ |
-| 17 | `payments` | customers, users | ⬜ |
-| 18 | `payment_allocations` | payments, installments | ⬜ |
-| 19 | `account_transactions` | customers, orders, payments, users | ⬜ |
-| 20 | `supplier_payments` | suppliers, purchase_orders, users | ⬜ |
-| 21 | `supplier_transactions` | suppliers, purchase_orders, supplier_payments, users | ⬜ |
-| 22 | `audit_logs` | users | ⬜ |
+| 15 | `payment_plans` | orders, users | ✅ |
+| 16 | `installments` | payment_plans | ✅ |
+| 17 | `payments` | customers, users | ✅ |
+| 18 | `payment_allocations` | payments, installments | ✅ |
+| 19 | `account_transactions` | customers, orders, payments, users | ✅ |
+| 20 | `supplier_payments` | suppliers, purchase_orders, users | ✅ |
+| 21 | `supplier_transactions` | suppliers, purchase_orders, supplier_payments, users | ✅ |
+| 22 | `audit_logs` | users | ✅ |
 
 > **Not:** Pivot öncesi tasarımda `inventory_movements`, `orders` tablosuna FK verdiği
 > halde ondan önce geliyordu ve bu bir sorun olarak işaretlenmişti. Yeni sıralamada
@@ -2435,6 +2469,1896 @@ VALUES (1, 'Sayim', 5, 1);
 SELECT SUM(on_hand_delta) AS on_hand, SUM(reserved_delta) AS reserved
 FROM inventory_movements WHERE product_variant_id = 1;
 -- Beklenen: on_hand = 17, reserved = 0
+```
+
+---
+
+### Tablo 15/22 — `payment_plans`
+
+Bir siparişin ödeme mutabakatı. Bu tablo bir **zarf**tır — gerçek veri (kaç taksit,
+ne kadar, hangi vade) `installments`'ta yaşar.
+
+```
+Sipariş (Shipped) ──▶ payment_plan (1 tane, zarf) ──▶ installments (N tane, satırlar)
+```
+
+#### Önce dürüst soru: bu tabloya gerçekten gerek var mı?
+
+Tablo çok ince — `order_id` + birkaç meta alan. `installments` doğrudan `order_id`
+tutsa olmaz mıydı?
+
+```
+SEÇENEK A (seçilen)               SEÇENEK B (tabloyu kaldır)
+──────────────────────────        ──────────────────────────
+orders                            orders
+   │ 1:1                             │ 1:N
+payment_plans                     installments
+   │ 1:N
+installments
+```
+
+B daha az tablo, daha az JOIN. Yine de A korundu, üç sebeple:
+
+1. **Plan bir bütündür.** "5 taksitlik plan" tek bir ticari mutabakattır; taksitler o
+   mutabakatın parçalarıdır, bağımsız kayıtlar değil. Model gerçekliği yansıtmalı.
+2. **Plan seviyesinde bilgi var.** "Müşteriyle 5 taksit konuşuldu, ilki peşinat",
+   planı kimin ne zaman kurduğu — bunlar taksit bazında değil plan bazında anlamlı.
+   B'de bu bilgiyi 5 taksite birden kopyalamak gerekirdi.
+3. **Revizyon kapısı açık kalır.** Toptan ticarette "vadeyi uzatalım" sık olur.
+   İleride plan revizyonu eklenirse "eski plan → yeni plan" ilişkisi kurulacak bir
+   varlık gerekir; B'de böyle bir tutamak yok.
+
+Bir JOIN'in maliyeti bu ölçekte sıfıra yakın; kavramsal netliğin değeri kalıcı.
+
+#### Revizyon V1'de YOK — ve nedeni önemli
+
+Şema tarafı kolay olurdu: bir `status` kolonu + kısmi unique index:
+
+```sql
+-- Bir siparişin aynı anda tek AKTİF planı olur, geçmiş planlar durur
+CREATE UNIQUE INDEX ... ON payment_plans (order_id) WHERE status = 'Active';
+```
+
+Yapılmıyor, çünkü asıl zorluk şemada değil:
+
+> *"Eski plandaki 3. taksite 15.000 TL ödeme dağıtılmıştı. Plan revize edildi, o taksit
+> artık yok. O 15.000 TL nereye gidecek?"*
+
+Bu, kendi başına bir tasarım turu hak eden bir problem. Yarım çözüp şemaya kolon
+eklemek, sonra "aslında böyle olmayacakmış" demekten kötüdür.
+
+**V1: katı 1:1.** İhtiyaç netleştiğinde `UNIQUE` kısıtını kısmi index'e çevirmek tek
+migration'lık iş — kapı kapanmıyor, sadece şimdi açılmıyor.
+
+#### Plan ne zaman oluşur? — Sevkiyat anında
+
+```
+Sipariş alındı    →  stok rezerve                    (plan YOK)
+Hazırlanıyor      →                                  (plan YOK)
+SEVK EDİLDİ       →  stok düşer
+                     cari hesaba borç yazılır
+                     ★ payment_plan + installments oluşur
+Teslim edildi
+```
+
+Sebep: **mal gitmeden borç doğmaz, borç doğmadan ödeme planı kurmak anlamsızdır.**
+Yan fayda: sipariş iptal edilirse plan hiç oluşmamış olur — temizlenecek kayıt kalmaz.
+
+```sql
+CREATE TABLE payment_plans (
+    id                    bigint GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+    order_id              bigint        NOT NULL,
+
+    created_by_user_id    bigint        NOT NULL,
+    notes                 text          NULL,
+
+    created_at            timestamptz   NOT NULL DEFAULT now(),
+    updated_at            timestamptz   NOT NULL DEFAULT now(),
+
+    CONSTRAINT fk_payment_plans_order
+        FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE RESTRICT,
+    CONSTRAINT fk_payment_plans_created_by
+        FOREIGN KEY (created_by_user_id) REFERENCES users(id) ON DELETE RESTRICT
+);
+
+CREATE UNIQUE INDEX ux_payment_plans_order_id
+    ON payment_plans (order_id);
+
+CREATE INDEX ix_payment_plans_created_by
+    ON payment_plans (created_by_user_id);
+```
+
+#### Gerekçeler
+
+- **`total_amount` kolonu neden yok** — Cazip görünüyor ama gereksiz. Plan tutarı zaten
+  iki yerde var: `orders.total_amount` (ne kadar borç) ve `SUM(installments.amount)`
+  (nasıl bölündü). Üçüncü bir kopya sadece drift kaynağı olur. Kilitli ilke:
+  türetilebilen değer bağımsız alan olarak saklanmaz.
+- **`SUM(installments.amount) = orders.total_amount` kuralı nerede** — Application
+  katmanında, transaction içinde. DB'de zorlanamaz çünkü çok satırlı bir kuraldır: bir
+  taksit satırı yazılırken toplam henüz tamamlanmamıştır. ("DB kısıtı mı, uygulama
+  kuralı mı?" tablosunun ders kitabı örneği.)
+- **`notes`** — *"Müşteri Eylül'de nakit sıkışık, ilk taksit Ekim'e atıldı."* Bu tür
+  mutabakat notları plan seviyesinde anlamlıdır, taksit seviyesinde değil.
+- **`created_by_user_id`** — Denetim gereksinimi: spec §13 "ödeme planı değişikliği"ni
+  denetlenecek işlemler arasında sayıyor. Planı kimin kurduğu kayıtlı olmalı.
+- **`is_active` yok, ama `updated_at` var** — Çelişki değil: plan **pasifleştirilmez**
+  (V1'de plan yaşam döngüsü yok; sipariş iptal edilirse plan da ölür ama kayıt kalır),
+  buna karşılık **`notes` düzenlenebilir**. `updated_at`'in varlık sebebi budur.
+  Append-only defterlerden (`order_history`, `inventory_movements`) bu yüzden ayrılır.
+- **`customer_id` neden yok** — `orders` üzerinden ulaşılabiliyor. Kopyalamak,
+  "sipariş bir müşteriye, planı başka müşteriye ait" gibi **imkânsız bir durumu mümkün
+  kılardı**. İmkânsızı mümkün kılan kolon eklenmez.
+- **`ON DELETE RESTRICT` (her iki FK)** — Hard-delete zaten yasak; RESTRICT savunma
+  derinliği.
+
+#### Doğrulama testleri
+
+```sql
+-- Testlerde order_id = 1, user_id = 1 varsayılmıştır.
+
+-- 1) Plan oluştur
+INSERT INTO payment_plans (order_id, created_by_user_id, notes)
+VALUES (1, 1, 'Peşinat + 4 taksit, müşteriyle telefonda mutabık kalındı');
+-- Beklenen: INSERT 0 1
+
+-- 2) Aynı siparişe ikinci plan → REDDEDİLMELİ
+INSERT INTO payment_plans (order_id, created_by_user_id)
+VALUES (1, 1);
+-- Beklenen HATA: ux_payment_plans_order_id (duplicate key)
+
+-- 3) Olmayan sipariş → REDDEDİLMELİ
+INSERT INTO payment_plans (order_id, created_by_user_id)
+VALUES (9999, 1);
+-- Beklenen HATA: fk_payment_plans_order
+
+-- 4) Kullanıcısız plan → REDDEDİLMELİ
+INSERT INTO payment_plans (order_id) VALUES (4);
+-- Beklenen HATA: null value in column "created_by_user_id"
+
+-- 5) Olmayan kullanıcı → REDDEDİLMELİ
+INSERT INTO payment_plans (order_id, created_by_user_id)
+VALUES (2, 9999);
+-- Beklenen HATA: fk_payment_plans_created_by
+```
+
+---
+
+### Tablo 16/22 — `installments`
+
+Perakendeci finansının kalbi. `payment_plans` zarftı; **para burada yaşıyor.**
+
+Kritik ayrım (spec §8.2):
+
+| `installments` | `payments` (Tablo 17) |
+|---|---|
+| Ödenmesi **gereken** para | Fiilen **alınan** para |
+| Biz üretiriz (plan kurulurken) | Müşteri getirir |
+| Vadesi vardır | Tarihi vardır |
+
+İkisi arasındaki bağ `payment_allocations` (Tablo 18) ile kurulur.
+
+#### Karar 1: `status` kolonu YOK
+
+En cazip hata bu olurdu: `status varchar CHECK IN ('Pending','Partial','Paid','Overdue')`.
+Spec §8.2 bunu açıkça reddediyor — dört durumun dördü de **iki girdiden** türer:
+`SUM(payment_allocations.amount)` ve `due_date` ↔ `CURRENT_DATE`.
+
+```
+Ödendi    →  dağıtılan ≥ tutar
+Kısmi     →  0 < dağıtılan < tutar
+Bekliyor  →  dağıtılan = 0  VE  vade ≥ bugün
+Gecikmiş  →  kalan > 0      VE  vade < bugün
+```
+
+Saklasaydık ne olurdu: **`Gecikmiş` durumu kimse hiçbir şey yapmadan doğar** — sadece
+takvim ilerler. Saklanan kolonu güncel tutmak için her gece bir job gerekirdi; job bir
+gün çalışmazsa tahsilat panosu yalan söyler. Türetilmiş hâli her zaman doğrudur:
+
+```sql
+-- Tahsilat panosu (Faz 14). payment_allocations Tablo 18'de gelecek.
+SELECT i.id, i.due_date, i.amount,
+       COALESCE(SUM(pa.amount), 0)                AS odenen,
+       i.amount - COALESCE(SUM(pa.amount), 0)     AS kalan,
+       CASE
+         WHEN COALESCE(SUM(pa.amount), 0) >= i.amount    THEN 'Ödendi'
+         WHEN i.due_date < CURRENT_DATE                  THEN 'Gecikmiş'
+         WHEN COALESCE(SUM(pa.amount), 0) > 0            THEN 'Kısmi'
+         ELSE 'Bekliyor'
+       END AS durum
+FROM installments i
+LEFT JOIN payment_allocations pa ON pa.installment_id = i.id AND pa.is_reversed = false
+GROUP BY i.id;
+```
+
+*(`is_reversed` Tablo 18'de kararlaştırılacak — ters kayıtla iptal edilmiş dağıtımlar
+toplama girmemelidir.)*
+
+#### Karar 2: `installment_number` neden var
+
+`due_date`'e göre sıralayıp "kaçıncı" bilgisi çalışma anında üretilebilirdi. Reddedildi:
+
+- İki taksit **aynı vadeye** düşebilir (peşinat + ilk taksit aynı gün). Sıralama o an
+  belirsizleşir, ekranda satırlar yer değiştirebilir.
+- İnsan böyle konuşuyor: *"3. taksidi ödedi mi?"* Telefonda müşteriyle konuşurken
+  sabit bir referans numarası gerekir.
+- Vade **değiştirilebilir**; sıra numarası sabit kalmalıdır. Vadeyi öteleyince
+  "3. taksit" 5. sıraya düşerse konuşma dili bozulur.
+
+`UNIQUE (payment_plan_id, installment_number)` — plan içinde numara tekrar edemez.
+
+#### Karar 3: `installment_type` sadece bir etiket
+
+Spec: *"Peşinat ayrı bir alan değil, özel bir taksittir."* Şemada `down_payment numeric`
+diye bir kolon **yoktur**; peşinat, `installment_type = 'DownPayment'` olan sıradan bir
+taksit satırıdır.
+
+Önemli olan: **hiçbir para mantığı bu alana bakmaz.** Tahsilat dağıtımı vadeye göre
+çalışır, peşinata özel kural yoktur. Alan yalnızca görüntüleme ve raporlama içindir.
+
+Bu yüzden `DownPayment` ↔ `installment_number = 1` gibi bir `CHECK` **konmadı.** Meşru
+istisna var: peşinat iki parçada alınabilir. Etiketin taşımadığı bir anlamı kısıtla
+zorlamak, ileride gerçek veriyi reddeder.
+
+#### Karar 4: Düzeltme politikası — FK'nin kendisi zorluyor 🔑
+
+Hard-delete yasağı listesine bakıldığında `payments`, `account_transactions`,
+`order_items` var ama **`installments` ve `payment_plans` yok.** Bu tesadüf değil:
+
+| | Nedir | Silinebilir mi |
+|---|---|---|
+| `payments`, `account_transactions` | **Olmuş olay** — para el değiştirdi | ❌ Asla. Ters kayıt. |
+| `installments` | **Niyet beyanı** — "şu tarihte şu kadar alacağız" | ✅ Henüz kimse ödemediyse |
+
+"Henüz kimse ödemediyse" koşulunu kim kontrol edecek? **Hiç kimse — yapı kendisi
+engelliyor.** `payment_allocations.installment_id` bu tabloya `ON DELETE RESTRICT` ile
+bağlanacak (Tablo 18):
+
+```
+Dağıtım yoksa  →  DELETE çalışır      (plan düzeltilir, temiz)
+Dağıtım varsa  →  PostgreSQL reddeder (ödenmiş taksit yok edilemez)
+```
+
+Uygulama katmanında tek satır kontrol kodu yazmadan doğru davranış çıkar. Yanlış
+kurulmuş plan (sevkiyattan hemen sonra fark edilir) serbestçe düzeltilir; ödeme almış
+plan dokunulmaz olur.
+
+> ⚠️ Bu, `installments`'ı kural dışı yapmıyor — `orders` veya `payments` silmek hâlâ
+> yasak. `installments` bir muhasebe kaydı değil, henüz gerçekleşmemiş bir takvimdir.
+
+```sql
+CREATE TABLE installments (
+    id                    bigint GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+    payment_plan_id       bigint        NOT NULL,
+
+    installment_number    smallint      NOT NULL,
+    installment_type      varchar(20)   NOT NULL,
+
+    amount                numeric(18,2) NOT NULL,
+    due_date              date          NOT NULL,
+
+    notes                 text          NULL,
+
+    created_at            timestamptz   NOT NULL DEFAULT now(),
+    updated_at            timestamptz   NOT NULL DEFAULT now(),
+
+    CONSTRAINT fk_installments_payment_plan
+        FOREIGN KEY (payment_plan_id) REFERENCES payment_plans(id) ON DELETE RESTRICT,
+
+    CONSTRAINT chk_installments_type
+        CHECK (installment_type IN ('DownPayment', 'Regular')),
+    CONSTRAINT chk_installments_amount_positive
+        CHECK (amount > 0),
+    CONSTRAINT chk_installments_number_positive
+        CHECK (installment_number > 0)
+);
+
+CREATE UNIQUE INDEX ux_installments_plan_number
+    ON installments (payment_plan_id, installment_number);
+
+CREATE INDEX ix_installments_due_date
+    ON installments (due_date);
+```
+
+#### Gerekçeler
+
+- **`due_date` → `date`, `timestamptz` değil** — Kilitli konvansiyon: saat anlamı
+  olmayan iş tarihleri `date`. "15 Ekim'de vadesi doluyor" cümlesinde saat yoktur;
+  `timestamptz` olsaydı saat dilimi kayması vadeyi bir gün kaydırabilir, "gecikmiş mi
+  değil mi" sınırında gerçek bir hata doğardı.
+- **`amount > 0`, `>= 0` değil** — Sıfır tutarlı taksit anlamsızdır. Negatif taksit
+  iade demektir; iade bu tablonun işi değil (ters kayıt `payments` /
+  `account_transactions` tarafında).
+- **`installment_number smallint`** — Bir planda 200'den fazla taksit olmayacak;
+  `smallint` tavanı 32.767 fazlasıyla yeter.
+- **`paid_amount` kolonu yok** — `SUM(payment_allocations)` ile türetilir. Kilitli ilke.
+- **Ayrı FK index'i neden yok** — Tekrar Eden Desen #4 "her FK'ye elle index" diyor,
+  ama `ux_installments_plan_number` zaten `(payment_plan_id, ...)` ile başlıyor.
+  PostgreSQL bileşik index'in **sol önekini** tek başına kullanabilir; ikinci bir index
+  yalnızca disk ve yazma maliyeti olurdu. Deseni körü körüne değil, ne işe yaradığını
+  bilerek uygulamak.
+- **`ix_installments_due_date`** — Spec'in açıkça istediği index. Tahsilat panosunun
+  ana sorgusu ("bu hafta vadesi gelenler", "gecikmişler") tüm tabloyu taramaz.
+- **`notes`** — *"Müşteri bu taksidi Kasım'a ertelemek istedi, kabul edildi."* Vade
+  değişikliğinin gerekçesi satır bazında anlamlı.
+- **`ON DELETE RESTRICT`** — Plan silinmeye kalkılırsa taksitleri yüzünden engellenir.
+  Planı gerçekten silmek gerekirse önce taksitler silinir; o da ancak dağıtım yoksa
+  mümkündür. Zincir tutarlı.
+
+#### Uygulama katmanına devredilen kurallar (Faz 14)
+
+| Kural | Neden DB'de değil |
+|---|---|
+| `SUM(installments.amount) = orders.total_amount` | Satırlar tek tek yazılırken toplam henüz tutmaz |
+| `installment_number` boşluksuz 1,2,3… gitmeli | Çok satırlı |
+| Plan başına en fazla bir `DownPayment` (varsayılan öneri) | İş kuralı, veri bütünlüğü değil — kullanıcı bilinçli olarak ikiye bölebilmeli |
+
+#### Doğrulama testleri
+
+```sql
+-- payment_plan_id = 1 varsayılmıştır (Tablo 15 test 1'de oluşturuldu).
+
+-- 1) Peşinat + 4 taksitlik plan (spec §8.2 örneği, 100.000 TL)
+INSERT INTO installments (payment_plan_id, installment_number, installment_type, amount, due_date) VALUES
+  (1, 1, 'DownPayment', 20000.00, DATE '2026-08-18'),
+  (1, 2, 'Regular',     20000.00, DATE '2026-09-01'),
+  (1, 3, 'Regular',     20000.00, DATE '2026-10-01'),
+  (1, 4, 'Regular',     20000.00, DATE '2026-11-01'),
+  (1, 5, 'Regular',     20000.00, DATE '2026-12-01');
+-- Beklenen: INSERT 0 5
+
+-- 2) Eşit olmayan taksit → KABUL (spec: özel tutar desteklenir)
+INSERT INTO installments (payment_plan_id, installment_number, installment_type, amount, due_date)
+VALUES (1, 6, 'Regular', 7500.50, DATE '2027-01-15');
+-- Beklenen: INSERT 0 1
+
+-- 3) Aynı planda tekrar eden sıra numarası → REDDEDİLMELİ
+INSERT INTO installments (payment_plan_id, installment_number, installment_type, amount, due_date)
+VALUES (1, 3, 'Regular', 5000.00, DATE '2027-02-01');
+-- Beklenen HATA: ux_installments_plan_number (duplicate key)
+
+-- 4) Sıfır tutarlı taksit → REDDEDİLMELİ
+INSERT INTO installments (payment_plan_id, installment_number, installment_type, amount, due_date)
+VALUES (1, 7, 'Regular', 0, DATE '2027-02-01');
+-- Beklenen HATA: chk_installments_amount_positive
+
+-- 5) Geçersiz tip → REDDEDİLMELİ
+INSERT INTO installments (payment_plan_id, installment_number, installment_type, amount, due_date)
+VALUES (1, 8, 'Kapora', 5000.00, DATE '2027-02-01');
+-- Beklenen HATA: chk_installments_type   (DB'de İngilizce: 'DownPayment')
+
+-- 6) Sıfır sıra numarası → REDDEDİLMELİ
+INSERT INTO installments (payment_plan_id, installment_number, installment_type, amount, due_date)
+VALUES (1, 0, 'Regular', 5000.00, DATE '2027-02-01');
+-- Beklenen HATA: chk_installments_number_positive
+
+-- 7) Olmayan plan → REDDEDİLMELİ
+INSERT INTO installments (payment_plan_id, installment_number, installment_type, amount, due_date)
+VALUES (9999, 1, 'Regular', 5000.00, DATE '2027-02-01');
+-- Beklenen HATA: fk_installments_payment_plan
+
+-- 8) Aynı vadeye iki taksit → KABUL (peşinat + ilk taksit aynı gün olabilir)
+INSERT INTO installments (payment_plan_id, installment_number, installment_type, amount, due_date)
+VALUES (1, 9, 'Regular', 1000.00, DATE '2026-08-18');
+-- Beklenen: INSERT 0 1
+
+-- 9) Plan toplamı (Application katmanının yapacağı kontrol)
+SELECT SUM(amount) FROM installments WHERE payment_plan_id = 1;
+-- Beklenen: 108500.50 — test 2 ve 8 eklendiği için orders.total_amount'tan sapmış.
+--           Gerçek akışta bu sapma transaction içinde reddedilirdi.
+
+-- 10) Dağıtımsız taksit silinebilir (plan düzeltme senaryosu)
+DELETE FROM installments WHERE payment_plan_id = 1 AND installment_number = 9;
+-- Beklenen: DELETE 1
+-- (Tablo 18 geldikten sonra: dağıtımı olan bir taksitte aynı DELETE
+--  fk_payment_allocations_installment ile REDDEDİLECEK.)
+```
+
+---
+
+### Tablo 17/22 — `payments`
+
+Fiilen **alınan** para. Ters kayıt (reversal) politikasının şemada ilk kez gerçekten
+uygulandığı yer — burada alınan karar `supplier_payments`, `account_transactions` ve
+`supplier_transactions` için de şablon olacak.
+
+#### `installments`'ın karşıtı
+
+| `installments` | `payments` |
+|---|---|
+| Ödenmesi **gereken** | Fiilen **alınan** |
+| Biz üretiriz | Müşteri getirir |
+| Bir plana bağlı | 🔑 **Hiçbir plana bağlı değil** |
+
+Üçüncü satır kritik. Müşteri kapıya gelip *"25.000 veriyorum"* der — hangi taksitlere
+gideceğini **söylemez**. Spec §8.2: *"Sistem parayı en eski vadesi geçmiş taksitten
+başlayarak otomatik dağıtır."* Dolayısıyla:
+
+```
+payments.customer_id     ✅  para kimden geldi — bu kesin
+payments.order_id        ❌  hangi siparişe? müşteri bilmiyor, sistem dağıtacak
+payments.installment_id  ❌  bir ödeme birden çok taksidi kapatabilir
+```
+
+Bağ `payment_allocations` (Tablo 18) ile kurulur. **`payments` müşteri seviyesinde
+yaşar, sipariş seviyesinde değil.**
+
+#### Karar 1: Ters kayıt — üç seçenek
+
+Spec §8.4: *"Finansal hata silinerek düzeltilmez, ters kayıtla düzeltilir."* Bunun
+şemada üç ayrı karşılığı olabilirdi:
+
+| | Yöntem | Değerlendirme |
+|---|---|---|
+| A | Negatif tutarlı yeni satır (`-50.000`) | Muhasebe defteri mantığı. `payments` için **yanlış** — "eksi 50.000 lira tahsil ettik" diye bir olay yoktur. Bu, `account_transactions`'ın (Tablo 19) işidir. |
+| B | Orijinal satırı `Reversed` işaretlemek | ✅ **Seçildi** |
+| C | Ayrı `payment_reversals` tablosu | 23. tablo. İptal edilen ödeme sayısı azdır; ayrı tablo abartı. |
+
+Spec §12'deki akış tarifi de B'yi söylüyor: *"kayıt aktif mi doğrula → **`Reversed`
+işaretle** + neden/kim/ne zaman → dağıtımlar ödenen tutara sayılmaz olur → ters yönlü
+cari kaydı."*
+
+İş bölümü:
+
+```
+payments             →  B: Reversed durumu   ("bu tahsilat olmadı")
+account_transactions →  A: negatif satır     ("cari hesap düzeltmesi")
+```
+
+İkisi aynı transaction'da olur. Birinci tablo *olayı*, ikinci tablo *muhasebe etkisini*
+yazar.
+
+#### Karar 2: `status` mı, `is_reversed` mi?
+
+`installments`'ta "durum saklama, türet" dedik. Burada **tam tersi** — çelişki değil,
+sebebi farklı:
+
+- Taksidin durumu **başka verilerden hesaplanabiliyordu** (dağıtım toplamı + takvim).
+- Ödemenin iptal edilmiş olması **hiçbir şeyden hesaplanamaz** — bu bir insan
+  kararıdır, bir olgudur. Saklanmazsa kaybolur.
+
+| | Değerlendirme |
+|---|---|
+| `is_reversed boolean` | Yeterli görünüyor ama `reversed_at`/`by`/`reason` ile senkron kalması yine `CHECK`'e kalır |
+| `status varchar` | ✅ Şemanın geri kalanıyla tutarlı (`OrderStatus`, `PurchaseOrderStatus`). İleride üçüncü durum (`Bounced` — karşılıksız çek) eklemek tek satır. |
+
+`PaymentRecordStatus` enum'ı: `status IN ('Active','Reversed')`.
+
+> ⚠️ Tablo 16'nın tahsilat panosu sorgusunda `pa.is_reversed = false` yazılmıştı. Orası
+> `payments.status = 'Active'` üzerinden çalışacak — dağıtım kendi başına iptal edilmez,
+> bağlı olduğu ödeme iptal edilir. Tablo 18'de netleşecek.
+
+#### Karar 3: `payment_date` ayrı, `created_at`'ten farklı
+
+İkisi aynı şey değil ve bu ayrım muhasebede önemli:
+
+```
+payment_date  = 18 Ağustos   para fiilen o gün geldi (banka dekontundaki tarih)
+created_at    = 20 Ağustos   kullanıcı sisteme o gün girdi
+```
+
+Havale cuma gelir, pazartesi girilir. Rapor `payment_date`'e göre çalışır (gerçek nakit
+akışı), denetim `created_at`'e göre (kim ne zaman yazdı). Tek kolonla ikisi birden
+yapılamaz. `payment_date` → `date` (saat anlamı yok), `created_at` → `timestamptz`.
+
+```sql
+CREATE TABLE payments (
+    id                    bigint GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+    customer_id           bigint        NOT NULL,
+
+    amount                numeric(18,2) NOT NULL,
+    payment_method        varchar(20)   NOT NULL,
+    payment_date          date          NOT NULL,
+
+    reference_no          varchar(100)  NULL,
+    notes                 text          NULL,
+
+    status                varchar(20)   NOT NULL DEFAULT 'Active',
+    reversed_at           timestamptz   NULL,
+    reversed_by_user_id   bigint        NULL,
+    reversal_reason       text          NULL,
+
+    created_by_user_id    bigint        NOT NULL,
+    created_at            timestamptz   NOT NULL DEFAULT now(),
+    updated_at            timestamptz   NOT NULL DEFAULT now(),
+
+    CONSTRAINT fk_payments_customer
+        FOREIGN KEY (customer_id) REFERENCES customers(id) ON DELETE RESTRICT,
+    CONSTRAINT fk_payments_created_by
+        FOREIGN KEY (created_by_user_id) REFERENCES users(id) ON DELETE RESTRICT,
+    CONSTRAINT fk_payments_reversed_by
+        FOREIGN KEY (reversed_by_user_id) REFERENCES users(id) ON DELETE RESTRICT,
+
+    CONSTRAINT chk_payments_amount_positive
+        CHECK (amount > 0),
+    CONSTRAINT chk_payments_method
+        CHECK (payment_method IN ('Cash', 'BankTransfer', 'CreditCard', 'Cheque', 'PromissoryNote')),
+    CONSTRAINT chk_payments_status
+        CHECK (status IN ('Active', 'Reversed')),
+    CONSTRAINT chk_payments_reversal_consistency
+        CHECK (
+            (status = 'Active'
+                AND reversed_at IS NULL
+                AND reversed_by_user_id IS NULL
+                AND reversal_reason IS NULL)
+            OR
+            (status = 'Reversed'
+                AND reversed_at IS NOT NULL
+                AND reversed_by_user_id IS NOT NULL
+                AND reversal_reason IS NOT NULL
+                AND btrim(reversal_reason) <> '')
+        )
+);
+
+CREATE INDEX ix_payments_customer_date ON payments (customer_id, payment_date);
+CREATE INDEX ix_payments_payment_date  ON payments (payment_date);
+CREATE INDEX ix_payments_created_by    ON payments (created_by_user_id);
+```
+
+#### Gerekçeler
+
+- **`amount > 0` — negatif ödeme yasak** 🔑 Bu, ters kayıt kararının şemadaki mührü.
+  Negatife izin verseydik iki farklı iptal yöntemi (negatif satır **ve** `Reversed`) yan
+  yana yaşar, raporlar hangisini sayacağını bilemezdi. Tek yol bırakmak tutarlılığı
+  garanti eder.
+- **`chk_payments_reversal_consistency`** — Bu tablonun
+  `users.chk_users_role_supplier_consistency`'si. İki yönlü: iptal edilmiş kayıt
+  gerekçesiz olamaz (denetlenebilirlik), aktif kayıtta iptal alanları dolu olamaz (yarım
+  durum yok). Spec §8.4'ün *"kim/ne zaman/neden bilgisi tutulur"* cümlesi burada DB
+  kısıtına dönüşüyor.
+- **`payment_method` beş değer** — `Cash`, `BankTransfer`, `CreditCard`, `Cheque`,
+  `PromissoryNote`. Son ikisi toptan ayakkabı ticaretinde gerçek: çek ve senet yaygın
+  ödeme araçlarıdır. *(Çek/senedin kendi vade takibi — "çek portföyü" — ayrı bir dünya
+  ve V1 kapsamında değil. Burada yalnızca ödeme aracı olarak kaydediliyor.)*
+- **`reference_no` neden `UNIQUE` değil** — Cazip ama tehlikeli. Aynı dekont numarası
+  iki farklı bankada tekrarlanabilir; kullanıcı boş bırakabilir veya `'-'` yazabilir.
+  Benzersizlik zorlansa gerçek veri reddedilirdi. Mükerrer tahsilat riski UI'da çözülür:
+  aynı müşteriye aynı gün aynı tutar girilirse *"Benzer bir tahsilat var, emin
+  misiniz?"* uyarısı (Faz 14).
+- **`reversed_by_user_id` ayrı FK** — İptali yapan, kaydı giren kişiden farklı olabilir
+  (çalışan girer, patron iptal eder). Aynı kolonu paylaşmak bu bilgiyi yok ederdi.
+- **`updated_at` var, ama `amount` asla güncellenmez** — `notes` ve `reference_no`
+  düzeltilebilir. Tutar hatası iptal + yeni kayıtla düzeltilir (spec §8.4 örneği).
+  Bu, DB'de zorlanamaz (kolon seviyesinde izin yoktur); Application katmanının kuralı.
+- **`order_id` yok** — Yukarıda gerekçelendi. Ödeme müşteriye aittir, siparişe değil.
+- **Hard-delete yasak** — `payments` CLAUDE.md listesinde. `installments`'tan farkı: bu,
+  olmuş bir olaydır.
+
+#### Ters kayıt akışı (Faz 14, tek transaction)
+
+```
+BEGIN
+  1. payments #184 → status = 'Active' mi? (değilse hata: zaten iptal edilmiş)
+  2. payments #184 → status='Reversed', reversed_at/by/reason doldur
+  3. → bağlı payment_allocations artık sayılmaz
+       (dağıtım satırları DURUR, ödeme 'Reversed' olduğu için toplama girmez)
+  4. account_transactions → ters yönlü kayıt (+50.000, "Ödeme #184 iptali")
+  5. audit_logs → kim/ne zaman/neden
+COMMIT
+```
+
+3. adımın inceliği: dağıtım satırları **silinmiyor**. Silinseydi "bu para hangi
+taksitlere gitmişti" bilgisi kaybolurdu — iptalin ne etkilediğini kimse göremezdi.
+Satırlar durur; sorgular `JOIN payments p ON ... AND p.status = 'Active'` ile filtreler.
+
+#### Doğrulama testleri
+
+```sql
+-- customer_id = 1, user_id = 1 varsayılmıştır.
+
+-- 1) Havale ile tahsilat
+INSERT INTO payments (customer_id, amount, payment_method, payment_date, reference_no, created_by_user_id)
+VALUES (1, 25000.00, 'BankTransfer', DATE '2026-08-18', 'DEKONT-9912', 1);
+-- Beklenen: INSERT 0 1
+
+-- 2) Nakit tahsilat, referanssız
+INSERT INTO payments (customer_id, amount, payment_method, payment_date, created_by_user_id)
+VALUES (1, 5000.00, 'Cash', DATE '2026-08-19', 1);
+-- Beklenen: INSERT 0 1
+
+-- 3) Negatif tutar → REDDEDİLMELİ (ters kayıt böyle yapılmaz)
+INSERT INTO payments (customer_id, amount, payment_method, payment_date, created_by_user_id)
+VALUES (1, -5000.00, 'Cash', DATE '2026-08-19', 1);
+-- Beklenen HATA: chk_payments_amount_positive
+
+-- 4) Geçersiz ödeme yöntemi → REDDEDİLMELİ
+INSERT INTO payments (customer_id, amount, payment_method, payment_date, created_by_user_id)
+VALUES (1, 1000.00, 'Havale', DATE '2026-08-19', 1);
+-- Beklenen HATA: chk_payments_method   (DB'de İngilizce: 'BankTransfer')
+
+-- 5) Gerekçesiz iptal → REDDEDİLMELİ
+UPDATE payments SET status = 'Reversed' WHERE id = 1;
+-- Beklenen HATA: chk_payments_reversal_consistency
+
+-- 6) Tam iptal → KABUL
+UPDATE payments
+SET status = 'Reversed',
+    reversed_at = now(),
+    reversed_by_user_id = 1,
+    reversal_reason = 'Yanlış müşteriye işlendi'
+WHERE id = 1;
+-- Beklenen: UPDATE 1
+
+-- 7) Aktif kayıtta iptal alanı dolu → REDDEDİLMELİ
+UPDATE payments SET reversal_reason = 'deneme' WHERE id = 2;
+-- Beklenen HATA: chk_payments_reversal_consistency
+
+-- 8) Olmayan müşteri → REDDEDİLMELİ
+INSERT INTO payments (customer_id, amount, payment_method, payment_date, created_by_user_id)
+VALUES (9999, 1000.00, 'Cash', DATE '2026-08-19', 1);
+-- Beklenen HATA: fk_payments_customer
+
+-- 9) Aynı referans numarası tekrar → KABUL (bilinçli, UNIQUE değil)
+INSERT INTO payments (customer_id, amount, payment_method, payment_date, reference_no, created_by_user_id)
+VALUES (1, 3000.00, 'BankTransfer', DATE '2026-08-20', 'DEKONT-9912', 1);
+-- Beklenen: INSERT 0 1
+
+-- 10) Geçerli tahsilat toplamı (iptal edilmiş sayılmaz)
+SELECT COALESCE(SUM(amount), 0) FROM payments
+WHERE customer_id = 1 AND status = 'Active';
+-- Beklenen: 8000.00   (5000 + 3000; #1 iptal edildi)
+```
+
+---
+
+### Tablo 18/22 — `payment_allocations`
+
+`payments` ile `installments` arasındaki köprü. Otomatik dağıtım motorunun veri tarafı.
+
+#### Neden bir köprü tablosu gerekiyor
+
+Bir ödeme ile bir taksit arasında **çoktan-çoğa** ilişki var:
+
+```
+Taksit #1 kalan: 10.000  ◀──┐
+Taksit #2 kalan: 20.000  ◀──┤  Ödeme (25.000)
+                            │      ├── 10.000 → Taksit #1  (tamamen kapandı)
+                            └──────┴── 15.000 → Taksit #2  (kısmi, 5.000 kaldı)
+```
+
+- Bir ödeme → birden çok taksit (yukarıdaki örnek)
+- Bir taksit → birden çok ödeme (5.000'lik kalan sonraki ödemeyle kapanır)
+
+Klasik M:N; FK ile modellenemez, ara tablo şart. Ama sıradan bir M:N ara tablosu değil,
+**taşıdığı bir yük var:**
+
+```
+Sıradan M:N ara tablosu:  (a_id, b_id)                          → sadece "bağlı"
+Bu tablo:                 (payment_id, installment_id, amount)  → "ne kadarıyla bağlı"
+```
+
+#### Karar 1: 🔑 `UNIQUE (payment_id, installment_id)` bilinçli olarak YOK
+
+Sezgi der ki: *"Aynı ödemenin aynı taksite iki kez dağıtılması saçma, `UNIQUE` koy."*
+
+```
+(Ödeme #7, Taksit #3, 10.000)
+(Ödeme #7, Taksit #3,  5.000)   ← neden iki satır? tek satırda 15.000 olmalı
+```
+
+Yine de konmadı. Sebep: `UNIQUE` bu satırların **birleştirilmesini zorunlu kılar**, yani
+`UPDATE` gerektirir. Ama bu tablo bir **defter** — defterlerde satır güncellenmez.
+
+```
+Ödeme #7 kaydedildi                 →  Taksit #3'e 10.000 dağıtıldı
+Kullanıcı "Dağıtımı Değiştir" dedi  →  ne olacak?
+
+UNIQUE varsa:  mevcut satır UPDATE edilir → önceki dağıtımın izi kaybolur
+UNIQUE yoksa:  eski satırlar silinip yenileri yazılır (dağıtım yeniden kurulur)
+```
+
+Ayrıca `UNIQUE`, kısmi dağıtım + sonradan tamamlama gibi meşru bir senaryoyu bloke
+ederdi. Gerçek koruma `UNIQUE` değil, aşağıdaki iki toplam kuralıdır.
+
+#### Karar 2: İki toplam kuralı — DB zorlayamıyor
+
+Bu tablonun doğruluğu iki eşitsizliğe bağlı:
+
+```
+1. Bir ödemenin dağıtımları, ödemenin kendisini aşamaz
+   SUM(pa.amount WHERE payment_id = X)  ≤  payments[X].amount
+
+2. Bir taksidin dağıtımları, taksidi aşamaz
+   SUM(pa.amount WHERE installment_id = Y)  ≤  installments[Y].amount
+```
+
+İkisi de çok satırlı → DB'de zorlanamaz. Faz 14'te transaction içinde kontrol edilecek.
+DB'nin yapabildiği tek şey satır seviyesinde: `amount > 0`. Bu bile değerli — sıfır
+tutarlı dağıtım gürültüdür, negatifi ters kayıt politikasının ihlalidir.
+
+#### Karar 3: Bu tabloda `status` YOK
+
+Tablo 17'de `payments.status = 'Reversed'` kararı verildi. Buraya da bir `is_reversed`
+eklemek doğal görünüyor — **gerek yok, hatta zararlı.**
+
+Dağıtım kendi başına iptal edilmez; **bağlı olduğu ödeme iptal edilir.** İkinci bir
+durum alanı iki doğruluk kaynağı yaratırdı: `payments.status = 'Reversed'` ama
+`pa.is_reversed = false` kalırsa hangisi doğru? Klasik senkronizasyon hatası.
+
+Doğrusu durumu **JOIN ile** okumaktır:
+
+```sql
+-- Bir taksidin gerçekten ödenen tutarı
+SELECT COALESCE(SUM(pa.amount), 0)
+FROM payment_allocations pa
+JOIN payments p ON p.id = pa.payment_id
+WHERE pa.installment_id = 3
+  AND p.status = 'Active';        -- ⬅ iptal edilmiş ödemenin dağıtımı sayılmaz
+```
+
+> ✅ Tablo 16'daki taslak tahsilat sorgusunda geçen `pa.is_reversed = false` ifadesi bu
+> karara göre düzeltilmiştir; doğrusu `JOIN payments p ... AND p.status = 'Active'`.
+
+#### Karar 4: Silinebilir mi? — Evet
+
+Hard-delete yasağı listesinde yok, `installments` gibi. Mantık aynı:
+
+| | Nedir | Silinebilir mi |
+|---|---|---|
+| `payments` | Olmuş olay — para geldi | ❌ Asla |
+| `payment_allocations` | **Yorum** — o paranın nereye sayıldığı | ✅ Evet |
+
+"Dağıtımı Değiştir" işlemi eski satırları silip yenilerini yazar. Silinen şey para
+değil, paranın **atfı**. Para `payments`'ta duruyor ve orası dokunulmaz.
+
+Ödeme iptal edilirse dağıtımlar **silinmez** — durur, ama `status='Active'` filtresi
+yüzünden sayılmaz olur. Böylece "bu iptal ne etkilemişti?" sorusu cevaplanabilir kalır.
+
+```sql
+CREATE TABLE payment_allocations (
+    id                    bigint GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+
+    payment_id            bigint        NOT NULL,
+    installment_id        bigint        NOT NULL,
+
+    amount                numeric(18,2) NOT NULL,
+
+    created_at            timestamptz   NOT NULL DEFAULT now(),
+
+    CONSTRAINT fk_payment_allocations_payment
+        FOREIGN KEY (payment_id) REFERENCES payments(id) ON DELETE RESTRICT,
+    CONSTRAINT fk_payment_allocations_installment
+        FOREIGN KEY (installment_id) REFERENCES installments(id) ON DELETE RESTRICT,
+
+    CONSTRAINT chk_payment_allocations_amount_positive
+        CHECK (amount > 0)
+);
+
+CREATE INDEX ix_payment_allocations_payment_id
+    ON payment_allocations (payment_id);
+CREATE INDEX ix_payment_allocations_installment_id
+    ON payment_allocations (installment_id);
+```
+
+#### Gerekçeler
+
+- **`updated_at` yok** — Bu tablo append-only'ye yakın: satır ya yazılır ya silinir,
+  **güncellenmez**. `order_history` ve `inventory_movements` ile aynı aile. (Tam
+  append-only değil çünkü silinebiliyor; ama güncellenmediği için `updated_at`
+  anlamsız.)
+- **`created_by_user_id` yok** — Bilinçli. Dağıtımı **sistem** yapar, kullanıcı değil.
+  "Kim" sorusunun cevabı `payments.created_by_user_id`'de zaten var; buraya kopyalamak
+  dağıtımın bir insan kararı olduğu yanılsamasını yaratırdı. Manuel dağıtım ("Dağıtımı
+  Değiştir") istisnadır ve `audit_logs`'a düşer.
+- **`amount > 0`** — Sıfır dağıtım gürültü, negatif dağıtım ters kayıt politikasının
+  ihlali. `payments.amount > 0` ile aynı disiplin.
+- **İki FK'ye de ayrı index** — Tablo 16'daki durum burada yok (bileşik unique index
+  yok) ve her iki yönde de sorgulanıyor. Tekrar Eden Desen #4 tam olarak uygulanıyor.
+- **`ON DELETE RESTRICT` (installment)** 🔑 — Tablo 16'da verilen sözün gerçekleştiği
+  yer. Dağıtımı olan taksit PostgreSQL tarafından korunuyor; uygulama katmanında tek
+  satır kontrol kodu yok.
+- **`notes` yok** — Dağıtım bir hesaplama sonucudur, bir mutabakat değil. Not düşülecek
+  bir şey varsa `payments.notes`'a yazılır.
+
+#### Otomatik dağıtım algoritması (Faz 14)
+
+Spec §8.2'nin veri tarafındaki karşılığı:
+
+```
+GİRDİ: müşteri, tutar
+1. O müşterinin kalanı > 0 olan taksitlerini bul
+   (kalan = installments.amount − SUM(aktif dağıtımlar))
+2. Sırala: due_date ASC  →  en eski vadesi geçmiş önce
+3. Para bitene kadar sırayla doldur:
+     dağıt = MIN(taksidin kalanı, elde kalan para)
+     payment_allocations satırı yaz
+4. Para artarsa → dağıtılmamış kalır (avans).
+   Sonraki taksit oluştuğunda dağıtılabilir.
+```
+
+4. adım şemada bir şey gerektirmiyor: dağıtılmamış para, `payments.amount` ile
+`SUM(allocations)` arasındaki fark olarak zaten görünür. **Avans için ayrı kolon veya
+tablo yok** — türetilir.
+
+#### 🏅 Faz 19 için altın testler
+
+`inventory_movements`'takinin finans karşılığı. İkisi de **0 satır** dönmelidir:
+
+```sql
+-- 1) Aşırı dağıtılmış ödeme var mı? (dağıtım > ödeme tutarı)
+SELECT p.id, p.amount, SUM(pa.amount) AS dagitilan
+FROM payments p
+JOIN payment_allocations pa ON pa.payment_id = p.id
+GROUP BY p.id, p.amount
+HAVING SUM(pa.amount) > p.amount;
+
+-- 2) Fazla ödenmiş taksit var mı? (aktif dağıtım > taksit tutarı)
+SELECT i.id, i.amount, SUM(pa.amount) AS odenen
+FROM installments i
+JOIN payment_allocations pa ON pa.installment_id = i.id
+JOIN payments p             ON p.id = pa.payment_id AND p.status = 'Active'
+GROUP BY i.id, i.amount
+HAVING SUM(pa.amount) > i.amount;
+```
+
+Satır dönerse Application katmanındaki transaction bütünlüğü bir yerde bozulmuş demektir.
+
+#### Doğrulama testleri
+
+```sql
+-- payment_id = 2 (5.000, Active) ve 3 (3.000, Active) varsayılmıştır (Tablo 17).
+-- installment_id = 1 (20.000) ve 2 (20.000) varsayılmıştır (Tablo 16).
+
+-- 1) Bir ödemenin iki taksite bölünmesi (spec §8.2 senaryosu)
+INSERT INTO payment_allocations (payment_id, installment_id, amount) VALUES
+  (2, 1, 4000.00),
+  (2, 2, 1000.00);
+-- Beklenen: INSERT 0 2   (toplam 5.000 = ödemenin tamamı)
+
+-- 2) Bir taksidin ikinci ödemeyle kısmen kapanması
+INSERT INTO payment_allocations (payment_id, installment_id, amount)
+VALUES (3, 1, 3000.00);
+-- Beklenen: INSERT 0 1   (taksit #1: 4.000 + 3.000 = 7.000 ödendi, 13.000 kaldı)
+
+-- 3) Sıfır tutarlı dağıtım → REDDEDİLMELİ
+INSERT INTO payment_allocations (payment_id, installment_id, amount)
+VALUES (2, 1, 0);
+-- Beklenen HATA: chk_payment_allocations_amount_positive
+
+-- 4) Negatif dağıtım → REDDEDİLMELİ
+INSERT INTO payment_allocations (payment_id, installment_id, amount)
+VALUES (2, 1, -500);
+-- Beklenen HATA: chk_payment_allocations_amount_positive
+
+-- 5) Olmayan ödeme → REDDEDİLMELİ
+INSERT INTO payment_allocations (payment_id, installment_id, amount)
+VALUES (9999, 1, 100);
+-- Beklenen HATA: fk_payment_allocations_payment
+
+-- 6) 🔑 Dağıtımı olan taksit SİLİNEMEZ (Tablo 16'da verilen söz)
+DELETE FROM installments WHERE id = 1;
+-- Beklenen HATA: fk_payment_allocations_installment (foreign key violation)
+
+-- 7) Dağıtımsız taksit hâlâ silinebilir
+DELETE FROM installments WHERE id = 6;
+-- Beklenen: DELETE 1
+
+-- 8) Aynı ödeme+taksit çifti ikinci kez → KABUL (UNIQUE bilinçli olarak yok)
+INSERT INTO payment_allocations (payment_id, installment_id, amount)
+VALUES (3, 1, 500.00);
+-- Beklenen: INSERT 0 1
+
+-- 9) Taksit #1'in ödenen tutarı (iptal edilmiş ödemeler sayılmaz)
+SELECT COALESCE(SUM(pa.amount), 0) AS odenen
+FROM payment_allocations pa
+JOIN payments p ON p.id = pa.payment_id AND p.status = 'Active'
+WHERE pa.installment_id = 1;
+-- Beklenen: 7500.00   (4000 + 3000 + 500)
+
+-- 10) Ödeme iptal edilince dağıtım DURUR ama SAYILMAZ
+UPDATE payments SET status='Reversed', reversed_at=now(),
+       reversed_by_user_id=1, reversal_reason='Test iptali'
+WHERE id = 3;
+
+SELECT COALESCE(SUM(pa.amount), 0) AS odenen
+FROM payment_allocations pa
+JOIN payments p ON p.id = pa.payment_id AND p.status = 'Active'
+WHERE pa.installment_id = 1;
+-- Beklenen: 4000.00   (3.500'lük dağıtım satırları duruyor ama sayılmıyor)
+
+SELECT COUNT(*) FROM payment_allocations WHERE payment_id = 3;
+-- Beklenen: 2   (satırlar SİLİNMEDİ — iptalin neyi etkilediği görülebilir)
+```
+
+---
+
+### Tablo 19/22 — `account_transactions`
+
+Perakendeci **cari defteri**. Müşteri bakiyesinin tek doğruluk kaynağı.
+
+#### Neden bakiye bir kolon değil
+
+En yaygın muhasebe yazılımı hatası şudur:
+
+```sql
+-- ❌ ASLA
+ALTER TABLE customers ADD COLUMN balance numeric(18,2);
+```
+
+Neden çekici: bakiyeyi okumak tek `SELECT`. Neden felaket:
+
+1. **Drift.** Bir yerde `UPDATE balance` unutulursa rakam sessizce yanlışlanır ve hangi
+   işlemde bozulduğu asla bulunamaz.
+2. **İzlenemezlik.** *"Bu müşteri neden 47.500 borçlu?"* sorusunun cevabı yoktur.
+   Sadece sayı vardır.
+3. **Eşzamanlılık.** İki işlem aynı anda bakiyeyi güncellerse biri kaybolur.
+
+Defter (ledger) yaklaşımı üçünü birden çözer: **her hareket bir satır, bakiye `SUM()`.**
+
+```
+İşlem                          amount        Bakiye (türetilmiş)
+─────────────────────────────────────────────────────────────────
+Sipariş #1042 sevk edildi     +100.000            100.000
+Tahsilat #7                    −25.000             75.000
+Tahsilat #9                    −30.000             45.000
+Ödeme #7 iptali                +25.000             70.000
+```
+
+Bakiye her zaman doğrudur çünkü hesaplanmıştır, saklanmamıştır. Spec §8.5:
+*"Perakendeci bakiyesi → `SUM(account_transactions.amount)`."*
+
+#### Karar 1: 🔑 İşaret konvansiyonu — `debit`/`credit` değil, tek `amount`
+
+| | Yöntem | Değerlendirme |
+|---|---|---|
+| A | `debit numeric` + `credit numeric` | Klasik çift taraflı muhasebe. Her satırda biri boş/sıfır → yarısı israf. Bakiye `SUM(debit) - SUM(credit)`. Muhasebeci olmayan için okunması zor. |
+| B | **Tek `amount`, işaretli** | ✅ **Seçildi.** Bakiye tek `SUM()`. `inventory_movements.on_hand_delta` ile aynı desen — şema kendi içinde tutarlı. |
+
+Konvansiyon **kilitli**:
+
+```
+amount > 0  →  müşterinin bize BORCU ARTAR   (sipariş sevk edildi)
+amount < 0  →  müşterinin bize BORCU AZALIR  (tahsilat yapıldı)
+
+Bakiye > 0  →  müşteri bize borçlu     ← normal durum
+Bakiye < 0  →  biz müşteriye borçluyuz ← avans / fazla tahsilat
+Bakiye = 0  →  hesap kapalı
+```
+
+Bu cümle yanlış anlaşılırsa tüm finans modülü ters çalışır. Bu yüzden `CHECK` ile de
+destekleniyor: her hareket tipi hangi işareti taşıyabileceğini biliyor
+(`inventory_movements`'taki imza deseninin finans karşılığı).
+
+#### Karar 2: Ters kayıt — burada **A yöntemi** (negatif satır)
+
+Tablo 17'de `payments` için B (`status='Reversed'`) seçilmiş, A (negatif satır)
+reddedilmişti. Burada tam tersi. **Bu tutarsızlık değil, doğru ayrım:**
+
+| | `payments` | `account_transactions` |
+|---|---|---|
+| Nedir | Fiziksel **olay** — para el değiştirdi | Muhasebe **etkisi** |
+| "Eksi tahsilat" | Anlamsız — öyle bir olay yok | Anlamlı — borç geri yüklenir |
+| İptal yöntemi | Satırı `Reversed` işaretle | **Ters yönlü yeni satır** |
+
+Bir defterde satır asla değiştirilmez veya silinmez; **karşı kayıtla nötrlenir.**
+Muhasebenin 500 yıllık kuralı ve spec §8.4 tam olarak bunu tarif ediyor.
+
+```
+account_transactions
+  #201  Payment      −50.000   "Ödeme #184"
+  #202  Reversal     +50.000   "Ödeme #184 iptali"   ← nötrlendi, ikisi de duruyor
+  #203  Payment       −5.000   "Ödeme #185 (doğru tutar)"
+```
+
+Bu yüzden tablo **saf append-only**: `UPDATE` yok, `DELETE` yok, `updated_at` yok,
+`status` yok.
+
+#### Karar 3: `transaction_type` ve kaynak belge bağı
+
+Her satır bir yerden doğar. Kaynağı bilinmezse defter okunamaz hale gelir
+("bu +100.000 nereden geldi?").
+
+| Tip | İşaret | Kaynak belge | Ne zaman oluşur |
+|---|---|---|---|
+| `Sale` | `> 0` | `order_id` zorunlu | Sipariş **sevk edildiğinde** |
+| `Payment` | `< 0` | `payment_id` zorunlu | Tahsilat kaydedildiğinde |
+| `Reversal` | serbest | ikisinden biri zorunlu | İptal işleminde (ters yön) |
+| `Adjustment` | serbest | ikisi de boş olabilir | Manuel düzeltme (açıklama zorunlu) |
+
+`Reversal` ve `Adjustment`'ın işareti serbest: neyi ters çevirdiğine bağlı olarak artı
+ya da eksi olabilir. Ama **sıfır olamaz** — sıfır tutarlı defter satırı gürültüdür.
+
+```sql
+CREATE TABLE account_transactions (
+    id                    bigint GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+    customer_id           bigint        NOT NULL,
+
+    transaction_type      varchar(20)   NOT NULL,
+    amount                numeric(18,2) NOT NULL,
+
+    order_id              bigint        NULL,
+    payment_id            bigint        NULL,
+
+    description           text          NULL,
+
+    created_by_user_id    bigint        NOT NULL,
+    created_at            timestamptz   NOT NULL DEFAULT now(),
+
+    CONSTRAINT fk_account_transactions_customer
+        FOREIGN KEY (customer_id) REFERENCES customers(id) ON DELETE RESTRICT,
+    CONSTRAINT fk_account_transactions_order
+        FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE RESTRICT,
+    CONSTRAINT fk_account_transactions_payment
+        FOREIGN KEY (payment_id) REFERENCES payments(id) ON DELETE RESTRICT,
+    CONSTRAINT fk_account_transactions_created_by
+        FOREIGN KEY (created_by_user_id) REFERENCES users(id) ON DELETE RESTRICT,
+
+    CONSTRAINT chk_account_transactions_amount_nonzero
+        CHECK (amount <> 0),
+
+    CONSTRAINT chk_account_transactions_type_signature
+        CHECK (
+            (transaction_type = 'Sale'
+                AND amount > 0
+                AND order_id IS NOT NULL AND payment_id IS NULL)
+            OR
+            (transaction_type = 'Payment'
+                AND amount < 0
+                AND payment_id IS NOT NULL AND order_id IS NULL)
+            OR
+            (transaction_type = 'Reversal'
+                AND (order_id IS NOT NULL OR payment_id IS NOT NULL))
+            OR
+            (transaction_type = 'Adjustment'
+                AND description IS NOT NULL
+                AND btrim(description) <> '')
+        )
+);
+
+CREATE INDEX ix_account_transactions_customer_created
+    ON account_transactions (customer_id, created_at);
+CREATE INDEX ix_account_transactions_order_id      ON account_transactions (order_id);
+CREATE INDEX ix_account_transactions_payment_id    ON account_transactions (payment_id);
+CREATE INDEX ix_account_transactions_created_by    ON account_transactions (created_by_user_id);
+```
+
+#### Gerekçeler
+
+- **`updated_at` yok, `status` yok** — Saf append-only. `inventory_movements` ve
+  `order_history` ile aynı aile. Bir defter satırı yazıldıktan sonra dokunulmaz;
+  yanlışsa karşı kayıt yazılır.
+- **`chk_account_transactions_type_signature`** — Bu tablonun en güçlü koruması. `Sale`
+  bir siparişe bağlı olmak **zorunda**, `Payment` bir ödemeye. Yoksa defterde kaynağı
+  belirsiz satırlar oluşur ve *"bu para nereden geldi?"* sorusu cevapsız kalır. Ayrıca
+  yanlış işaret (`Sale` ile eksi tutar) DB'de reddedilir — kod hatası defteri bozamaz.
+- **`Adjustment` için `description` zorunlu** — Manuel düzeltme, gerekçesi olmadan
+  denetlenebilir değildir. `payments.reversal_reason` ile aynı disiplin.
+- **`amount <> 0`, `> 0` değil** — Diğer finans tablolarında `> 0` denmişti; burada
+  işaret anlamlı bir veri taşıdığı için yalnızca sıfır yasak.
+- **`installment_id` yok** — Cari defter taksit seviyesinde çalışmaz. Bakiye müşteri
+  seviyesindedir; taksit detayı `installments` + `payment_allocations`'tadır.
+- **`balance_after` (yürüyen bakiye) kolonu yok** — Cazip görünüyor (ekstre ekranında
+  hazır kolon) ama saklanan türetilmiş değerdir: araya geriye dönük bir satır girerse
+  sonraki tüm satırlar yanlışlanır. Ekstre ekranı bunu pencere fonksiyonuyla anlık
+  hesaplar.
+
+#### Cari ekstre sorgusu (Faz 14)
+
+```sql
+SELECT created_at::date AS tarih,
+       transaction_type,
+       description,
+       amount,
+       SUM(amount) OVER (ORDER BY created_at, id) AS yuruyen_bakiye
+FROM account_transactions
+WHERE customer_id = 1
+ORDER BY created_at, id;
+```
+
+`yuruyen_bakiye` saklanmıyor, pencere fonksiyonuyla üretiliyor — geriye dönük satır
+girse bile her zaman doğru.
+
+#### 🏅 Faz 19 altın testleri
+
+Spec §14'ün finans senaryosu: *"100.000 sipariş + 20.000 ödeme = 80.000 bakiye"*
+
+```sql
+-- 1) Müşteri bakiyeleri
+SELECT c.id, COALESCE(SUM(at.amount), 0) AS bakiye
+FROM customers c
+LEFT JOIN account_transactions at ON at.customer_id = c.id
+GROUP BY c.id;
+
+-- 2) Tutarlılık: aktif ödemelerin toplamı, 'Payment' tipli hareketlerin
+--    toplamının işaretçe tersine eşit olmalı
+SELECT p.customer_id,
+       SUM(p.amount)                                  AS odemeler,
+       (SELECT -SUM(at.amount) FROM account_transactions at
+        WHERE at.customer_id = p.customer_id AND at.transaction_type = 'Payment')
+                                                      AS defterdeki
+FROM payments p
+WHERE p.status = 'Active'
+GROUP BY p.customer_id;
+-- İki kolon eşit olmalı. Eşit değilse: bir tahsilat deftere yazılmamış
+-- veya bir iptalin ters kaydı unutulmuş demektir.
+```
+
+#### Doğrulama testleri
+
+```sql
+-- customer_id = 1, order_id = 1, user_id = 1, payment_id = 2 (Active) varsayılmıştır.
+
+-- 1) Sipariş sevkiyatı → borç doğar
+INSERT INTO account_transactions (customer_id, transaction_type, amount, order_id, description, created_by_user_id)
+VALUES (1, 'Sale', 100000.00, 1, 'Sipariş SIP-2026-000142 sevkiyatı', 1);
+-- Beklenen: INSERT 0 1
+
+-- 2) Tahsilat → borç azalır
+INSERT INTO account_transactions (customer_id, transaction_type, amount, payment_id, description, created_by_user_id)
+VALUES (1, 'Payment', -5000.00, 2, 'Tahsilat #2 (Nakit)', 1);
+-- Beklenen: INSERT 0 1
+
+-- 3) Ödeme iptalinin ters kaydı → borç geri yüklenir
+INSERT INTO account_transactions (customer_id, transaction_type, amount, payment_id, description, created_by_user_id)
+VALUES (1, 'Reversal', 5000.00, 2, 'Tahsilat #2 iptali', 1);
+-- Beklenen: INSERT 0 1
+
+-- 4) Sipariş sevkiyatı EKSİ tutarla → REDDEDİLMELİ (işaret hatası)
+INSERT INTO account_transactions (customer_id, transaction_type, amount, order_id, created_by_user_id)
+VALUES (1, 'Sale', -100000.00, 1, 1);
+-- Beklenen HATA: chk_account_transactions_type_signature
+
+-- 5) Siparişe bağlanmamış satış → REDDEDİLMELİ (kaynağı belirsiz satır)
+INSERT INTO account_transactions (customer_id, transaction_type, amount, created_by_user_id)
+VALUES (1, 'Sale', 100000.00, 1);
+-- Beklenen HATA: chk_account_transactions_type_signature
+
+-- 6) Tahsilat ARTI tutarla → REDDEDİLMELİ
+INSERT INTO account_transactions (customer_id, transaction_type, amount, payment_id, created_by_user_id)
+VALUES (1, 'Payment', 5000.00, 2, 1);
+-- Beklenen HATA: chk_account_transactions_type_signature
+
+-- 7) Gerekçesiz manuel düzeltme → REDDEDİLMELİ
+INSERT INTO account_transactions (customer_id, transaction_type, amount, created_by_user_id)
+VALUES (1, 'Adjustment', -250.00, 1);
+-- Beklenen HATA: chk_account_transactions_type_signature
+
+-- 8) Gerekçeli manuel düzeltme → KABUL
+INSERT INTO account_transactions (customer_id, transaction_type, amount, description, created_by_user_id)
+VALUES (1, 'Adjustment', -250.00, 'Kur farkı düzeltmesi, patron onayı', 1);
+-- Beklenen: INSERT 0 1
+
+-- 9) Sıfır tutarlı hareket → REDDEDİLMELİ
+INSERT INTO account_transactions (customer_id, transaction_type, amount, description, created_by_user_id)
+VALUES (1, 'Adjustment', 0, 'Test', 1);
+-- Beklenen HATA: chk_account_transactions_amount_nonzero
+
+-- 10) Geçersiz tip → REDDEDİLMELİ
+INSERT INTO account_transactions (customer_id, transaction_type, amount, description, created_by_user_id)
+VALUES (1, 'Iade', -100.00, 'Test', 1);
+-- Beklenen HATA: chk_account_transactions_type_signature (hiçbir dala uymaz)
+
+-- 11) Bakiye
+SELECT COALESCE(SUM(amount), 0) AS bakiye
+FROM account_transactions WHERE customer_id = 1;
+-- Beklenen: 99750.00   (100000 − 5000 + 5000 − 250)
+
+-- 12) Cari ekstre (yürüyen bakiye saklanmıyor, hesaplanıyor)
+SELECT created_at::date, transaction_type, amount,
+       SUM(amount) OVER (ORDER BY created_at, id) AS yuruyen_bakiye
+FROM account_transactions WHERE customer_id = 1 ORDER BY created_at, id;
+-- Beklenen: 100000 → 95000 → 100000 → 99750
+```
+
+---
+
+### Tablo 20/22 — `supplier_payments` 🆕
+
+Üreticiye **yaptığımız** ödemeler. Perakendeci tarafının aynası — ama bilinçli olarak
+çok daha ince.
+
+#### Asimetri neden doğru
+
+Spec §8.3: *"Taksit planı / taksit / dağıtım makinesi **kurulmuyor**. İleride üreticiye
+vadeli taksitli ödeme gerekirse eklenir. Şimdi 3 tablo kurup kullanmamak israftır."*
+
+```
+PERAKENDECİ TARAFI (5 tablo)          ÜRETİCİ TARAFI (2 tablo)
+──────────────────────────────        ──────────────────────────
+payment_plans                         ─
+installments                          ─   (purchase_orders.payment_due_date yeter)
+payments                    ◀──────▶  supplier_payments
+payment_allocations                   ─
+account_transactions        ◀──────▶  supplier_transactions
+```
+
+Bu tembellik değil, gerçek bir fark:
+
+| | Perakendeciden tahsilat | Üreticiye ödeme |
+|---|---|---|
+| Kim planlar | Biz — vade, taksit sayısı bizim kararımız | Üretici — vadeyi o söyler, biz uyarız |
+| Kaç taraf | Onlarca müşteri, her biri farklı planda | Birkaç üretici, basit vade |
+| Belirsizlik | Yüksek — kim ne zaman öder bilinmez, kovalanır | Düşük — vadesi gelen fatura ödenir |
+| Kısmi ödeme | Kural, istisna değil | Olur ama nadir |
+
+`suppliers` tablosunda `credit_limit` konmama gerekçesinin aynısı: **kontrolü bizde
+olmayan bir süreci detaylı modellemek anlamsızdır.** Vadeyi üretici koyar, biz sadece ne
+ödediğimizi kaydederiz.
+
+> 🎨 *"Gereksiz simetri kurmak da bir over-engineering biçimidir"* — `suppliers`
+> tablosunda söylenen cümle burada bir kez daha uygulanıyor.
+
+#### Karar 1: `purchase_order_id` var — ve `payments`'ın tersine zorunlu değil
+
+`payments`'ta `order_id` konmamıştı: müşteri parayı getirir, hangi siparişe gideceğini
+sistem dağıtır. Burada durum farklı — **biz ödeme yaparken hangi faturayı kapattığımızı
+biliriz.**
+
+```
+Perakendeci:  "25.000 veriyorum"                          → hangi taksitler? sistem bulur
+Biz:          "Anadolu'ya PO-2026-14 için 80.000 ödedim"  → belli
+```
+
+Ama zorunlu da değil, çünkü meşru istisnalar var:
+
+- **Toplu ödeme:** *"Anadolu'ya bu ay 200.000 gönderdim, üç faturayı birden kapattı."*
+- **Avans:** *"Sipariş vermeden önce 50.000 kapora yolladık."*
+
+Dolayısıyla nullable. Doluysa doğrudan bağ kurulur; boşsa bakiyeden düşülür
+(`supplier_transactions` toplamı).
+
+> Perakendeci tarafındaki `payment_allocations`'ın üretici karşılığı **yok** — spec §8.3
+> gereği. Toplu ödeme, faturalara dağıtılmadan sadece bakiyeyi azaltır. Bu kabul edilen
+> bir basitleştirmedir: *"Anadolu'ya 200.000 borçluydum, 200.000 ödedim, hesap kapandı"*
+> — hangi kuruşun hangi faturaya gittiği takip edilmez.
+
+#### Karar 2: `payments` ile birebir aynı ters kayıt deseni
+
+Burada yeni bir tasarım kararı yok — Tablo 17'nin kararı aynen uygulanıyor:
+
+- `status IN ('Active','Reversed')`, satır silinmez
+- `reversed_at` / `reversed_by_user_id` / `reversal_reason` üçlüsü, `CHECK` ile senkron
+- `amount > 0` — negatif ödeme yasak, iptalin tek yolu `Reversed`
+- `payment_date` (`date`) ≠ `created_at` (`timestamptz`)
+
+**Bu tutarlılık kasıtlı.** İki tablo aynı işi yapıyorsa aynı biçimde yapmalı;
+geliştirici birini öğrendiğinde diğerini de bilmiş olur.
+
+```sql
+CREATE TABLE supplier_payments (
+    id                    bigint GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+    supplier_id           bigint        NOT NULL,
+    purchase_order_id     bigint        NULL,
+
+    amount                numeric(18,2) NOT NULL,
+    payment_method        varchar(20)   NOT NULL,
+    payment_date          date          NOT NULL,
+
+    reference_no          varchar(100)  NULL,
+    notes                 text          NULL,
+
+    status                varchar(20)   NOT NULL DEFAULT 'Active',
+    reversed_at           timestamptz   NULL,
+    reversed_by_user_id   bigint        NULL,
+    reversal_reason       text          NULL,
+
+    created_by_user_id    bigint        NOT NULL,
+    created_at            timestamptz   NOT NULL DEFAULT now(),
+    updated_at            timestamptz   NOT NULL DEFAULT now(),
+
+    CONSTRAINT fk_supplier_payments_supplier
+        FOREIGN KEY (supplier_id) REFERENCES suppliers(id) ON DELETE RESTRICT,
+    CONSTRAINT fk_supplier_payments_purchase_order
+        FOREIGN KEY (purchase_order_id) REFERENCES purchase_orders(id) ON DELETE RESTRICT,
+    CONSTRAINT fk_supplier_payments_created_by
+        FOREIGN KEY (created_by_user_id) REFERENCES users(id) ON DELETE RESTRICT,
+    CONSTRAINT fk_supplier_payments_reversed_by
+        FOREIGN KEY (reversed_by_user_id) REFERENCES users(id) ON DELETE RESTRICT,
+
+    CONSTRAINT chk_supplier_payments_amount_positive
+        CHECK (amount > 0),
+    CONSTRAINT chk_supplier_payments_method
+        CHECK (payment_method IN ('Cash', 'BankTransfer', 'CreditCard', 'Cheque', 'PromissoryNote')),
+    CONSTRAINT chk_supplier_payments_status
+        CHECK (status IN ('Active', 'Reversed')),
+    CONSTRAINT chk_supplier_payments_reversal_consistency
+        CHECK (
+            (status = 'Active'
+                AND reversed_at IS NULL
+                AND reversed_by_user_id IS NULL
+                AND reversal_reason IS NULL)
+            OR
+            (status = 'Reversed'
+                AND reversed_at IS NOT NULL
+                AND reversed_by_user_id IS NOT NULL
+                AND reversal_reason IS NOT NULL
+                AND btrim(reversal_reason) <> '')
+        )
+);
+
+CREATE INDEX ix_supplier_payments_supplier_date      ON supplier_payments (supplier_id, payment_date);
+CREATE INDEX ix_supplier_payments_purchase_order_id  ON supplier_payments (purchase_order_id);
+CREATE INDEX ix_supplier_payments_payment_date       ON supplier_payments (payment_date);
+CREATE INDEX ix_supplier_payments_created_by         ON supplier_payments (created_by_user_id);
+```
+
+#### 🔴 Gizlilik notu — bu tablo üreticiye asla açılmaz
+
+Bu tabloda `supplier_id` var, yani teorik olarak *"üretici kendi ödemelerini görsün"*
+denebilir. **Hayır.**
+
+| Neden | |
+|---|---|
+| `purchase_order_id` üzerinden zincir | Üretici, hangi faturaya ne zaman ödeme yaptığımızı görürse **nakit akışımızı** okur — pazarlık gücümüzü kaybederiz |
+| `reference_no` | Banka dekont numaraları; hesap bilgisi sızıntısı riski |
+| `internal_notes` deseni gereksiz | `purchase_orders`'ta `notes` (üretici görür) / `internal_notes` (sadece biz) ayrımı vardı; burada **hiç** görmediği için ayrıma gerek yok |
+
+Üreticinin göreceği şey `purchase_orders.payment_due_date` ve — istenirse — kendi
+bakiyesidir. Ödeme **detayları** değil. Faz 18'de bu tablo için `Manufacturer` rolüne
+hiçbir endpoint açılmayacak; 403.
+
+#### Gerekçeler
+
+- **`purchase_order_id` nullable + `RESTRICT`** — Yukarıda gerekçelendi. `RESTRICT`,
+  ödemesi olan satın alma siparişinin silinmesini engeller (zaten hard-delete yasak).
+- **`payment_method` aynı beş değer** — `payments` ile birebir. Aynı enum'ı iki farklı
+  listeyle tanımlamak, ileride birinin güncellenip diğerinin unutulmasına davetiyedir.
+- **`supplier_payment_allocations` diye bir tablo yok** — Spec §8.3'ün doğrudan sonucu.
+- **`updated_at` var, `amount` yine dokunulmaz** — `payments` ile aynı: `notes` /
+  `reference_no` düzeltilebilir, tutar hatası iptal + yeni kayıtla çözülür.
+- **Hard-delete yasak** — `supplier_payments` CLAUDE.md listesinde.
+
+#### Doğrulama testleri
+
+```sql
+-- supplier_id = 1, purchase_order_id = 1, user_id = 1 varsayılmıştır.
+
+-- 1) Faturaya bağlı ödeme
+INSERT INTO supplier_payments (supplier_id, purchase_order_id, amount, payment_method, payment_date, reference_no, created_by_user_id)
+VALUES (1, 1, 80000.00, 'BankTransfer', DATE '2026-08-20', 'EFT-4417', 1);
+-- Beklenen: INSERT 0 1
+
+-- 2) Toplu ödeme (faturasız) → KABUL
+INSERT INTO supplier_payments (supplier_id, amount, payment_method, payment_date, notes, created_by_user_id)
+VALUES (1, 200000.00, 'BankTransfer', DATE '2026-08-25', 'Ağustos toplu ödemesi, üç faturayı kapatıyor', 1);
+-- Beklenen: INSERT 0 1
+
+-- 3) Avans (sipariş öncesi) → KABUL
+INSERT INTO supplier_payments (supplier_id, amount, payment_method, payment_date, notes, created_by_user_id)
+VALUES (1, 50000.00, 'Cash', DATE '2026-08-26', 'Sipariş öncesi kapora', 1);
+-- Beklenen: INSERT 0 1
+
+-- 4) Negatif tutar → REDDEDİLMELİ
+INSERT INTO supplier_payments (supplier_id, amount, payment_method, payment_date, created_by_user_id)
+VALUES (1, -1000.00, 'Cash', DATE '2026-08-26', 1);
+-- Beklenen HATA: chk_supplier_payments_amount_positive
+
+-- 5) Geçersiz ödeme yöntemi → REDDEDİLMELİ
+INSERT INTO supplier_payments (supplier_id, amount, payment_method, payment_date, created_by_user_id)
+VALUES (1, 1000.00, 'EFT', DATE '2026-08-26', 1);
+-- Beklenen HATA: chk_supplier_payments_method   ('BankTransfer' olmalı)
+
+-- 6) Gerekçesiz iptal → REDDEDİLMELİ
+UPDATE supplier_payments SET status = 'Reversed' WHERE id = 1;
+-- Beklenen HATA: chk_supplier_payments_reversal_consistency
+
+-- 7) Tam iptal → KABUL
+UPDATE supplier_payments
+SET status = 'Reversed', reversed_at = now(),
+    reversed_by_user_id = 1, reversal_reason = 'Çift ödeme yapılmış'
+WHERE id = 1;
+-- Beklenen: UPDATE 1
+
+-- 8) Olmayan üretici → REDDEDİLMELİ
+INSERT INTO supplier_payments (supplier_id, amount, payment_method, payment_date, created_by_user_id)
+VALUES (9999, 1000.00, 'Cash', DATE '2026-08-26', 1);
+-- Beklenen HATA: fk_supplier_payments_supplier
+
+-- 9) Olmayan satın alma siparişi → REDDEDİLMELİ
+INSERT INTO supplier_payments (supplier_id, purchase_order_id, amount, payment_method, payment_date, created_by_user_id)
+VALUES (1, 9999, 1000.00, 'Cash', DATE '2026-08-26', 1);
+-- Beklenen HATA: fk_supplier_payments_purchase_order
+
+-- 10) Bu üreticiye yapılan geçerli ödemelerin toplamı
+SELECT COALESCE(SUM(amount), 0) FROM supplier_payments
+WHERE supplier_id = 1 AND status = 'Active';
+-- Beklenen: 250000.00   (200000 + 50000; #1 iptal edildi)
+```
+
+---
+
+### Tablo 21/22 — `supplier_transactions` 🆕
+
+Üretici **cari defteri**. `account_transactions`'ın aynası — ve işaret konvansiyonunun
+ters çevrildiği yer. **Bu tablonun tek gerçek riski budur.**
+
+#### 🔴 Karar 1: İşaret konvansiyonu — hangi yön?
+
+İki seçenek vardı; yanlış seçim tüm üretici finansını ters çevirirdi.
+
+| | Yaklaşım | Sonuç |
+|---|---|---|
+| A | **"Bizim borcumuz"** perspektifi: mal alınca `+`, ödeyince `−` | Bakiye `> 0` → **biz borçluyuz** |
+| B | **Aynalama**: `account_transactions` ile aynı işaret, ters yorum | Bakiye `> 0` → karşı taraf borçlu |
+
+**A seçildi.** Gerekçe: her iki defterde de **bakiye pozitifse "borç var" demeli** —
+yalnızca borçlunun kim olduğu tabloya göre değişsin.
+
+```
+account_transactions   →  bakiye +47.500  →  MÜŞTERİ bize 47.500 borçlu
+supplier_transactions  →  bakiye +80.000  →  BİZ üreticiye 80.000 borçluyuz
+```
+
+İkisi de "borç" okuyor. B seçilseydi üretici bakiyesi normalde eksi görünür, ekranda
+`-80.000` yazan bir rakamı *"80.000 borçluyuz"* diye okumak gerekirdi — her rapor
+bakışında zihinsel çeviri, yani hata kaynağı.
+
+Konvansiyon **kilitli**:
+
+```
+amount > 0  →  BİZİM BORCUMUZ ARTAR   (mal kabul edildi)
+amount < 0  →  BİZİM BORCUMUZ AZALIR  (ödeme yaptık)
+
+Bakiye > 0  →  üreticiye borçluyuz   ← normal durum
+Bakiye < 0  →  üretici bize borçlu   ← avans verdik / fazla ödedik
+Bakiye = 0  →  hesap kapalı
+```
+
+Karşılaştırma (referans olarak durur):
+
+| Olay | `account_transactions` | `supplier_transactions` |
+|---|---|---|
+| Mal hareketi | `Sale` **+** (sattık, alacak doğdu) | `Purchase` **+** (aldık, borç doğdu) |
+| Para hareketi | `Payment` **−** (tahsil ettik) | `Payment` **−** (ödedik) |
+| Yön | Bize gelecek para | Bizden gidecek para |
+
+#### Karar 2: `Purchase` ne zaman doğar — 🔑 sipariş verince değil, mal gelince
+
+`Sale`'in *sipariş alındığında değil, sevk edildiğinde* doğmasının tam simetriği:
+
+```
+BİZ SATARKEN                          BİZ ALIRKEN
+────────────                          ───────────
+Sipariş alındı  → borç YOK            Sipariş verildi → borç YOK
+Sevk edildi     → ★ Sale (+)          Mal kabul       → ★ Purchase (+)
+```
+
+> **Mal gelmeden para borcu doğmaz.** Sipariş bir niyet beyanıdır, fatura değil.
+
+Kısmi mal kabulün önemli sonucu: `purchase_order_items.received_total` (generated
+column) *"gelmeyen malın parası ödenmez"* diyordu. Bunun defter karşılığı —
+**her kısmi mal kabul kendi `Purchase` satırını doğurur:**
+
+```
+PO-2026-14, sipariş: 100.000 TL
+  15 Ağu  ilk parti geldi (60.000 TL'lik)  →  Purchase  +60.000
+  02 Eyl  kalan geldi     (40.000 TL'lik)  →  Purchase  +40.000
+```
+
+Tek seferde `+100.000` yazılsaydı, ilk partiden sonra 100.000 borçlu görünürdük — oysa
+40.000'lik mal daha elimize geçmemişti.
+
+#### Karar 3: Yapı `account_transactions` ile aynı
+
+Yeni tasarım kararı yok, aynı desen uygulanıyor:
+
+- Saf append-only: `UPDATE` yok, `DELETE` yok, `updated_at` yok, `status` yok
+- Ters kayıt = ters yönlü **yeni satır** (`Reversal` tipi)
+- Tip ↔ işaret ↔ kaynak belge imzası `CHECK` ile
+- `amount <> 0`
+- Bakiye = `SUM(amount)`; saklanan `suppliers.balance` kolonu **yok**
+
+```sql
+CREATE TABLE supplier_transactions (
+    id                    bigint GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+    supplier_id           bigint        NOT NULL,
+
+    transaction_type      varchar(20)   NOT NULL,
+    amount                numeric(18,2) NOT NULL,
+
+    purchase_order_id     bigint        NULL,
+    supplier_payment_id   bigint        NULL,
+
+    description           text          NULL,
+
+    created_by_user_id    bigint        NOT NULL,
+    created_at            timestamptz   NOT NULL DEFAULT now(),
+
+    CONSTRAINT fk_supplier_transactions_supplier
+        FOREIGN KEY (supplier_id) REFERENCES suppliers(id) ON DELETE RESTRICT,
+    CONSTRAINT fk_supplier_transactions_purchase_order
+        FOREIGN KEY (purchase_order_id) REFERENCES purchase_orders(id) ON DELETE RESTRICT,
+    CONSTRAINT fk_supplier_transactions_payment
+        FOREIGN KEY (supplier_payment_id) REFERENCES supplier_payments(id) ON DELETE RESTRICT,
+    CONSTRAINT fk_supplier_transactions_created_by
+        FOREIGN KEY (created_by_user_id) REFERENCES users(id) ON DELETE RESTRICT,
+
+    CONSTRAINT chk_supplier_transactions_amount_nonzero
+        CHECK (amount <> 0),
+
+    CONSTRAINT chk_supplier_transactions_type_signature
+        CHECK (
+            (transaction_type = 'Purchase'
+                AND amount > 0
+                AND purchase_order_id IS NOT NULL AND supplier_payment_id IS NULL)
+            OR
+            (transaction_type = 'Payment'
+                AND amount < 0
+                AND supplier_payment_id IS NOT NULL)
+            OR
+            (transaction_type = 'Reversal'
+                AND (purchase_order_id IS NOT NULL OR supplier_payment_id IS NOT NULL))
+            OR
+            (transaction_type = 'Adjustment'
+                AND description IS NOT NULL
+                AND btrim(description) <> '')
+        )
+);
+
+CREATE INDEX ix_supplier_transactions_supplier_created
+    ON supplier_transactions (supplier_id, created_at);
+CREATE INDEX ix_supplier_transactions_purchase_order_id
+    ON supplier_transactions (purchase_order_id);
+CREATE INDEX ix_supplier_transactions_payment_id
+    ON supplier_transactions (supplier_payment_id);
+CREATE INDEX ix_supplier_transactions_created_by
+    ON supplier_transactions (created_by_user_id);
+```
+
+#### Gerekçeler
+
+- **`Payment` dalında `purchase_order_id` serbest** — `account_transactions`'ta
+  `Payment` için `order_id IS NULL` zorlanmıştı (tahsilat siparişe bağlanmaz,
+  dağıtılır). Burada tersi mümkün: faturaya bağlı ödemede
+  `supplier_payments.purchase_order_id` zaten dolu, defterde de görünmesi ekstreyi
+  okunur kılar (*"PO-2026-14 için ödeme"*). Toplu ödemede boş kalır. Bu, aynalamanın
+  **bilinçli olarak kırıldığı tek nokta** — altta yatan iş akışı gerçekten farklı.
+- **`Purchase` için `purchase_order_id` zorunlu** — Kaynağı belirsiz borç satırı olamaz.
+  Siparişsiz mal alımı (`inventory_movements`'ta meşru sayılmıştı: *"üreticiden elden
+  alındı"*) burada `Adjustment` + açıklama ile kaydedilir.
+- **`suppliers.balance` kolonu yok** — `customers.balance`'ın olmama gerekçesinin
+  aynısı: drift, izlenemezlik, eşzamanlılık.
+- **`balance_after` yok** — Yürüyen bakiye pencere fonksiyonuyla hesaplanır.
+- **🔴 Gizlilik** — `supplier_payments` gibi bu tablo da üreticiye açılmaz. Bakiyesini
+  görebilir (istenirse, tek bir `SUM` olarak), defterin kendisini değil. Her sorgu
+  `WHERE supplier_id = <token'daki supplier_id>` ile filtrelenmeli — bir üretici
+  başkasının cari defterini asla görmemeli (invariant #2).
+
+#### Vade takibi — "kime ne zaman ödemem gerekiyor?"
+
+Spec §8.3'ün *"vade takibi"* gereksinimi bu tablo + `purchase_orders` ile karşılanıyor:
+
+```sql
+-- Vadesi gelmiş/yaklaşan, henüz kapanmamış borçlar
+SELECT po.id, s.company_name, po.payment_due_date,
+       po.total_amount,
+       COALESCE((SELECT SUM(st.amount) FROM supplier_transactions st
+                 WHERE st.purchase_order_id = po.id), 0) AS defter_bakiyesi
+FROM purchase_orders po
+JOIN suppliers s ON s.id = po.supplier_id
+WHERE po.payment_due_date <= CURRENT_DATE + 7
+ORDER BY po.payment_due_date;
+```
+
+Fatura bazlı bakiye, `purchase_order_id` dolu satırların toplamıdır. Toplu ödemeler bu
+sorguda görünmez — Tablo 20'de kabul edilen basitleştirmenin doğal sonucu; genel bakiye
+her zaman doğru kalır.
+
+#### 🏅 Faz 19 altın testi
+
+```sql
+-- Aktif üretici ödemelerinin toplamı, defterdeki 'Payment' toplamının
+-- işaretçe tersine eşit olmalı
+SELECT sp.supplier_id,
+       SUM(sp.amount)  AS odemeler,
+       (SELECT -SUM(st.amount) FROM supplier_transactions st
+        WHERE st.supplier_id = sp.supplier_id AND st.transaction_type = 'Payment')
+                       AS defterdeki
+FROM supplier_payments sp
+WHERE sp.status = 'Active'
+GROUP BY sp.supplier_id;
+-- Eşit olmalı.
+```
+
+#### Doğrulama testleri
+
+```sql
+-- supplier_id = 1, purchase_order_id = 1, user_id = 1 varsayılmıştır.
+-- supplier_payment_id = 2 (Active, 200.000) varsayılmıştır (Tablo 20).
+
+-- 1) Kısmi mal kabul → borç doğar (ilk parti)
+INSERT INTO supplier_transactions (supplier_id, transaction_type, amount, purchase_order_id, description, created_by_user_id)
+VALUES (1, 'Purchase', 60000.00, 1, 'PO-2026-14 ilk parti mal kabulü', 1);
+-- Beklenen: INSERT 0 1
+
+-- 2) Kalan mal kabul → borç artar (ikinci parti)
+INSERT INTO supplier_transactions (supplier_id, transaction_type, amount, purchase_order_id, description, created_by_user_id)
+VALUES (1, 'Purchase', 40000.00, 1, 'PO-2026-14 kalan mal kabulü', 1);
+-- Beklenen: INSERT 0 1
+
+-- 3) Ödeme → borç azalır
+INSERT INTO supplier_transactions (supplier_id, transaction_type, amount, supplier_payment_id, description, created_by_user_id)
+VALUES (1, 'Payment', -200000.00, 2, 'Ağustos toplu ödemesi', 1);
+-- Beklenen: INSERT 0 1
+
+-- 4) Faturaya bağlı ödeme (her iki kaynak da dolu) → KABUL
+INSERT INTO supplier_transactions (supplier_id, transaction_type, amount, purchase_order_id, supplier_payment_id, description, created_by_user_id)
+VALUES (1, 'Payment', -50000.00, 1, 2, 'PO-2026-14 için ödeme', 1);
+-- Beklenen: INSERT 0 1
+
+-- 5) Mal kabul EKSİ tutarla → REDDEDİLMELİ (işaret hatası)
+INSERT INTO supplier_transactions (supplier_id, transaction_type, amount, purchase_order_id, created_by_user_id)
+VALUES (1, 'Purchase', -60000.00, 1, 1);
+-- Beklenen HATA: chk_supplier_transactions_type_signature
+
+-- 6) Siparişe bağlanmamış mal kabul → REDDEDİLMELİ
+INSERT INTO supplier_transactions (supplier_id, transaction_type, amount, created_by_user_id)
+VALUES (1, 'Purchase', 60000.00, 1);
+-- Beklenen HATA: chk_supplier_transactions_type_signature
+
+-- 7) Ödeme kaydına bağlanmamış ödeme → REDDEDİLMELİ
+INSERT INTO supplier_transactions (supplier_id, transaction_type, amount, purchase_order_id, created_by_user_id)
+VALUES (1, 'Payment', -5000.00, 1, 1);
+-- Beklenen HATA: chk_supplier_transactions_type_signature
+
+-- 8) Gerekçesiz manuel düzeltme → REDDEDİLMELİ
+INSERT INTO supplier_transactions (supplier_id, transaction_type, amount, created_by_user_id)
+VALUES (1, 'Adjustment', 1500.00, 1);
+-- Beklenen HATA: chk_supplier_transactions_type_signature
+
+-- 9) Siparişsiz mal alımı → Adjustment ile KABUL
+INSERT INTO supplier_transactions (supplier_id, transaction_type, amount, description, created_by_user_id)
+VALUES (1, 'Adjustment', 1500.00, 'Üreticiden elden alınan mal, sipariş açılmadı', 1);
+-- Beklenen: INSERT 0 1
+
+-- 10) Sıfır tutar → REDDEDİLMELİ
+INSERT INTO supplier_transactions (supplier_id, transaction_type, amount, description, created_by_user_id)
+VALUES (1, 'Adjustment', 0, 'Test', 1);
+-- Beklenen HATA: chk_supplier_transactions_amount_nonzero
+
+-- 11) Bakiye — POZİTİF ise BİZ borçluyuz
+SELECT COALESCE(SUM(amount), 0) AS bakiye
+FROM supplier_transactions WHERE supplier_id = 1;
+-- Beklenen: -148500.00
+--   (60000 + 40000 − 200000 − 50000 + 1500)
+--   NEGATİF → fazla ödeme yapılmış; üretici bize 148.500 borçlu (avans durumu)
+
+-- 12) Üretici cari ekstresi
+SELECT created_at::date, transaction_type, description, amount,
+       SUM(amount) OVER (ORDER BY created_at, id) AS yuruyen_bakiye
+FROM supplier_transactions WHERE supplier_id = 1 ORDER BY created_at, id;
+-- Beklenen: 60000 → 100000 → -100000 → -150000 → -148500
+```
+
+---
+
+### Tablo 22/22 — `audit_logs` 🏁
+
+Son tablo. Diğer 21'inden **kategorik olarak farklı**: hiçbiri iş verisi tutmuyor — bu
+tablo *sistemde ne olup bittiğini* tutuyor.
+
+#### `order_history` varken buna neden gerek var?
+
+İkisi ilk bakışta aynı işi yapıyor gibi. Fark **kapsam ve izleyici**:
+
+| | `order_history` | `audit_logs` |
+|---|---|---|
+| Kapsam | Tek tablo (siparişler) | **Tüm sistem** |
+| İzleyici | Kullanıcı — *"siparişim ne oldu?"* | Yönetici/denetçi — *"kim ne yaptı?"* |
+| Nerede görünür | Sipariş detay ekranında, iş dilinde | Ayrı denetim ekranı, teknik |
+| Doğası | İş akışı olayları | Güvenlik/denetim kaydı |
+
+`order_history` bir **özellik**, `audit_logs` bir **kontrol**. Örtüşme var (sipariş
+iptali her ikisine de düşer) ve bu sorun değil: biri iş dilinde *"Sipariş iptal edildi
+— stok serbest bırakıldı"*, diğeri denetim dilinde *"user:3 UPDATE orders:1042 status
+Received→Cancelled @14:22"* der.
+
+#### Karar 1: 🔑 Polimorfik referans — FK olmayan `entity_id`
+
+Şemadaki tek yapısal istisna. Bu tablo *her tabloya* referans verebilmeli:
+
+| | Yöntem | Değerlendirme |
+|---|---|---|
+| A | 21 ayrı nullable FK kolonu (`order_id`, `product_id`, …) | ❌ Her satırda 20 kolon boş. Yeni tablo = şema değişikliği. Devasa `CHECK`. |
+| B | Her tablo için ayrı audit tablosu | ❌ 21 tablo daha. Sistem geneli sorgu imkânsız. |
+| C | **`entity_type` (metin) + `entity_id` (FK'siz sayı)** | ✅ **Seçildi** |
+
+C'nin bedeli açık ve kabul ediliyor: **`entity_id` referans bütünlüğü garantili
+değildir.** DB, `('orders', 99999)` yazılmasını engelleyemez.
+
+Bu neden burada kabul edilebilir — oysa şemanın geri kalanında FK disiplini katı:
+
+1. **Yazan yalnızca sistemdir.** Kullanıcı bu tabloya elle veri girmez; Application
+   katmanı yazar ve yazarken o kaydı zaten elinde tutar.
+2. **Denetim kaydı hedefinden bağımsız yaşamalıdır.** FK olsaydı, silinen bir kaydın
+   denetim izi de silinmek zorunda kalırdı (`CASCADE`) veya silme engellenirdi
+   (`RESTRICT`). İkisi de yanlış: **denetim kaydı, denetlediği şeyden daha uzun
+   yaşamalıdır.** Bu bir zayıflık değil, denetim sistemlerinin bilinçli tasarımıdır.
+3. Aynı gerekçe `entity_type`'ın `CHECK`'siz bırakılmasının da sebebidir — sabit liste
+   yazılsaydı yeni tablo eklendiğinde migration gerekirdi. Değerler C# tarafında
+   `nameof(Order)` gibi sabitlerden üretilir.
+
+#### Karar 2: Değişiklik nasıl saklanır — `old_values` / `new_values` JSONB
+
+`order_history` tek alanlık `old_value`/`new_value` (metin) kullanıyordu — durum
+geçişleri için yeterliydi. Burada yetmiyor: bir ürün güncellemesinde beş alan birden
+değişebilir.
+
+```jsonb
+old_values: {"sale_price": 850.00, "is_active": true}
+new_values: {"sale_price": 950.00, "is_active": false}
+```
+
+`jsonb` seçildi (`json` değil): ikili biçimde saklanır, sorgulanabilir (`->>`
+operatörü), indexlenebilir (GIN). PostgreSQL'in gerçek gücünü kullandığımız az sayıda
+yerden biri.
+
+**Yalnızca değişen alanlar yazılır** — tüm satırı iki kez saklamak tabloyu şişirir ve
+neyin değiştiğini gizler.
+
+#### Karar 3: 🔴 Hangi veri asla loglanmaz
+
+Spec §13: *"Asla loglanmaz: parolalar, hash'ler, token'lar, DB kimlik bilgileri."*
+
+Bu tablonun asıl riski şudur: bir kullanıcı güncellemesi loglanırken `password_hash` de
+değişen alanlar arasındaysa, JSONB'ye **hash düşer**. Denetim tablosu bir sızıntı
+noktasına dönüşür.
+
+DB bunu engelleyemez (JSONB serbest yapıdır). Koruma **Application katmanında**, sabit
+bir kara liste ile:
+
+```
+ASLA JSONB'ye girmez: password_hash, token, secret, connection_string
+```
+
+Bu kural yoruma bırakılmayacak kadar önemli — `AuditService` içinde tek bir yerde,
+sabit bir alan listesiyle uygulanır.
+
+#### Karar 4: `user_id` nullable — ve neden
+
+Denetlenen her işlem bir kullanıcı tarafından yapılmaz:
+
+- **Başarısız giriş denemesi:** Kullanıcı adı yanlışsa hangi `user_id` yazılacak?
+  Hiçbiri. Ama bu olay **tam olarak loglanması gereken** şeydir (Aşama 2'de VPS'e
+  geçince kritik).
+- **Sistem işlemleri:** Otomatik yedekleme, zamanlanmış görev.
+
+```sql
+CREATE TABLE audit_logs (
+    id                    bigint GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+
+    user_id               bigint        NULL,
+
+    action                varchar(50)   NOT NULL,
+    entity_type           varchar(100)  NOT NULL,
+    entity_id             bigint        NULL,
+
+    old_values            jsonb         NULL,
+    new_values            jsonb         NULL,
+
+    description           text          NULL,
+    ip_address            varchar(45)   NULL,
+
+    created_at            timestamptz   NOT NULL DEFAULT now(),
+
+    CONSTRAINT fk_audit_logs_user
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE RESTRICT,
+
+    CONSTRAINT chk_audit_logs_action_not_blank
+        CHECK (btrim(action) <> ''),
+    CONSTRAINT chk_audit_logs_entity_type_not_blank
+        CHECK (btrim(entity_type) <> '')
+);
+
+CREATE INDEX ix_audit_logs_entity       ON audit_logs (entity_type, entity_id);
+CREATE INDEX ix_audit_logs_user_created ON audit_logs (user_id, created_at);
+CREATE INDEX ix_audit_logs_created_at   ON audit_logs (created_at);
+```
+
+#### Gerekçeler
+
+- **`ip_address varchar(45)`, `inet` değil** — PostgreSQL'in yerel `inet` tipi daha
+  doğru görünür (alt ağ sorguları, doğrulama). Ama EF Core eşlemesi ek paket/dönüşüm
+  gerektirir ve bu ölçekte alt ağ sorgusu yapılmayacak. 45 karakter, IPv4-eşlemeli
+  IPv6'nın (`::ffff:192.168.100.228`) tam uzunluğudur. *Basit olan yeter.*
+- **`action` `CHECK`'siz** — `entity_type` ile aynı gerekçe: yeni bir işlem tipi
+  (`Export`, `PasswordChange`) eklemek migration gerektirmemeli. Denetim tablosu esnek
+  olmalı; kısıtlamak, loglanması gereken bir olayın loglanmamasına yol açabilir — ki bu,
+  gevşek kısıttan daha kötüdür.
+- **`user_id` FK'si `RESTRICT`** — Kullanıcı zaten silinemez. Burada FK var çünkü
+  `users` her zaman mevcuttur; polimorfik olan yalnızca `entity_id`.
+- **`entity_id` nullable** — `Login`, `LoginFailed`, `Backup` gibi olayların hedef
+  kaydı yoktur.
+- **`old_values`/`new_values` nullable** — `Create` işleminde `old_values` yoktur,
+  `Delete`/`Login`'de `new_values` yoktur.
+- **`description`** — JSONB teknik; ekranda okunacak bir cümle gerekir: *"Ahmet
+  Gündoğdu, GND000142 ürününün satış fiyatını 850 → 950 yaptı."*
+- **`updated_at` yok, `status` yok** — Saf append-only. **Değiştirilebilen bir denetim
+  kaydı denetim değildir.**
+- **Hard-delete yasak** — `audit_logs` CLAUDE.md listesinde.
+
+#### Büyüme ve arşivleme — Faz 20 notu
+
+Bu, sistemdeki **en hızlı büyüyen** tablo olacak: her fiyat değişikliği, her sipariş,
+her tahsilat bir satır. Kaba tahmin: günde ~200 işlem → yılda ~70.000 satır.
+
+Bu ölçekte sorun değil (PostgreSQL milyonlarca satırı rahat taşır) ama Faz 20'de bir
+**saklama politikası** kararlaştırılmalı:
+
+| Seçenek | Not |
+|---|---|
+| Süresiz sakla | En basit; 5 yılda ~350.000 satır — hâlâ sorunsuz |
+| 2 yıldan eski kayıtları arşiv tablosuna taşı | Ana tablo küçük kalır |
+| Yıla göre partition | Bu ölçekte over-engineering |
+
+**Şimdi karar verilmiyor** — veri yokken ölçmeden optimize etmek erken olur (aynı ilke
+`pg_trgm` kararında da uygulanmıştı).
+
+#### Denetlenecek işlemler (spec §13)
+
+```
+Ürün oluşturma · fiyat değişikliği · ürün pasifleştirme · manuel stok değişikliği
+sipariş oluşturma/sevk/iptal · satın alma siparişi oluşturma · mal kabul
+ödeme oluşturma/iptali · ödeme planı değişikliği · müşteri/üretici değişikliği
+kullanıcı oluşturma/pasifleştirme · giriş (başarılı ve başarısız)
+```
+
+#### Doğrulama testleri
+
+```sql
+-- user_id = 1 varsayılmıştır.
+
+-- 1) Fiyat değişikliği (JSONB)
+INSERT INTO audit_logs (user_id, action, entity_type, entity_id, old_values, new_values, description, ip_address)
+VALUES (1, 'Update', 'ProductVariant', 1,
+        '{"sale_price": 850.00}'::jsonb,
+        '{"sale_price": 950.00}'::jsonb,
+        'GND000142-41-SİYAH satış fiyatı güncellendi', '192.168.1.42');
+-- Beklenen: INSERT 0 1
+
+-- 2) Sipariş oluşturma (old_values yok)
+INSERT INTO audit_logs (user_id, action, entity_type, entity_id, new_values, description)
+VALUES (1, 'Create', 'Order', 1,
+        '{"order_number": "SIP-2026-000142", "total_amount": 100000.00}'::jsonb,
+        'Yeni sipariş oluşturuldu');
+-- Beklenen: INSERT 0 1
+
+-- 3) Başarılı giriş (entity_id yok)
+INSERT INTO audit_logs (user_id, action, entity_type, description, ip_address)
+VALUES (1, 'Login', 'User', 'Başarılı giriş', '192.168.1.42');
+-- Beklenen: INSERT 0 1
+
+-- 4) 🔑 Başarısız giriş (user_id YOK — kullanıcı adı yanlıştı)
+INSERT INTO audit_logs (action, entity_type, description, ip_address)
+VALUES ('LoginFailed', 'User', 'Başarısız giriş denemesi: kullanıcı adı "admin"', '203.0.113.7');
+-- Beklenen: INSERT 0 1
+
+-- 5) Boş action → REDDEDİLMELİ
+INSERT INTO audit_logs (user_id, action, entity_type, description)
+VALUES (1, '   ', 'Order', 'Test');
+-- Beklenen HATA: chk_audit_logs_action_not_blank
+
+-- 6) Olmayan kullanıcı → REDDEDİLMELİ
+INSERT INTO audit_logs (user_id, action, entity_type, entity_id)
+VALUES (9999, 'Update', 'Order', 1);
+-- Beklenen HATA: fk_audit_logs_user
+
+-- 7) ⚠️ Olmayan entity_id → KABUL EDİLİR (bilinçli: FK yok)
+INSERT INTO audit_logs (user_id, action, entity_type, entity_id, description)
+VALUES (1, 'Delete', 'Installment', 99999, 'Silinmiş kaydın izi');
+-- Beklenen: INSERT 0 1
+-- Bu, polimorfik tasarımın kabul edilen bedelidir.
+
+-- 8) Denetim sorgusu: "Bu ürün varyantına kim ne yaptı?"
+SELECT al.created_at, u.full_name, al.action,
+       al.old_values ->> 'sale_price' AS eski_fiyat,
+       al.new_values ->> 'sale_price' AS yeni_fiyat
+FROM audit_logs al
+LEFT JOIN users u ON u.id = al.user_id
+WHERE al.entity_type = 'ProductVariant' AND al.entity_id = 1
+ORDER BY al.created_at DESC;
+-- Beklenen: 1 satır — Ahmet Gündoğdu | Update | 850.00 | 950.00
+
+-- 9) Güvenlik sorgusu: "Bu IP'den kaç başarısız giriş geldi?"
+SELECT ip_address, COUNT(*) FROM audit_logs
+WHERE action = 'LoginFailed' AND created_at > now() - interval '1 hour'
+GROUP BY ip_address;
+-- Beklenen: 203.0.113.7 | 1
+
+-- 10) 🔴 password_hash loglanmamış olmalı (Application katmanı sorumluluğu)
+SELECT COUNT(*) FROM audit_logs
+WHERE old_values ? 'password_hash' OR new_values ? 'password_hash';
+-- Beklenen: 0 — sıfırdan farklıysa AuditService'in kara listesi bozuk demektir
 ```
 
 ---
